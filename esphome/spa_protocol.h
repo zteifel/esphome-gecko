@@ -13,8 +13,14 @@ class SpaProtocol : public Component, public UARTDevice {
   void set_pump_switch(switch_::Switch *sw) { pump_switch_ = sw; }
   void set_circ_switch(switch_::Switch *sw) { circ_switch_ = sw; }
   void set_program_select(select::Select *sel) { program_select_ = sel; }
-  void set_standby_sensor(binary_sensor::BinarySensor *bs) { standby_sensor_ = bs; }
-  void set_connected_sensor(binary_sensor::BinarySensor *bs) { connected_sensor_ = bs; }
+  void set_standby_sensor(binary_sensor::BinarySensor *bs) {
+    standby_sensor_ = bs;
+    bs->publish_state(standby_state_);  // Publish initial state (false)
+  }
+  void set_connected_sensor(binary_sensor::BinarySensor *bs) {
+    connected_sensor_ = bs;
+    bs->publish_state(connected_);  // Publish initial state (false)
+  }
   void set_climate(climate::Climate *cl) { climate_ = cl; }
 
   void setup() override {
@@ -36,8 +42,8 @@ class SpaProtocol : public Component, public UARTDevice {
       }
     }
 
-    // Check connection timeout
-    if (connected_ && (millis() - last_go_time_ > 90000)) {
+    // Check connection timeout (5 minutes)
+    if (connected_ && (millis() - last_i2c_time_ > 300000)) {
       connected_ = false;
       if (connected_sensor_) connected_sensor_->publish_state(false);
       ESP_LOGW("spa", "Spa connection lost (timeout)");
@@ -133,10 +139,11 @@ class SpaProtocol : public Component, public UARTDevice {
   bool heating_state_{false};
   bool standby_state_{false};
   bool connected_{false};
+  bool first_status_received_{false};
   uint8_t program_id_{0xFF};
   float target_temp_{0};
   float actual_temp_{0};
-  unsigned long last_go_time_{0};
+  unsigned long last_i2c_time_{0};
 
   // UART buffer
   char uart_buffer_[512];
@@ -253,41 +260,48 @@ class SpaProtocol : public Component, public UARTDevice {
   }
 
   void process_i2c_message(const uint8_t* data, uint8_t len) {
+    // Any I2C message means we're connected
+    last_i2c_time_ = millis();
+    if (!connected_) {
+      connected_ = true;
+      if (connected_sensor_) connected_sensor_->publish_state(true);
+      ESP_LOGI("spa", "Spa connected (I2C traffic detected)");
+    }
+
     // GO message (15 bytes, ends with "GO")
     if (len == 15 && data[13] == 0x47 && data[14] == 0x4F) {
       ESP_LOGI("spa", "Received GO message, sending response sequence");
-      last_go_time_ = millis();
-
-      if (!connected_) {
-        connected_ = true;
-        if (connected_sensor_) connected_sensor_->publish_state(true);
-      }
-
       send_go_response();
       return;
     }
 
     // Program status (18 bytes)
-    if (len == 18 && data[1] == 0x0B) {
+    if (len == 18) {
+      ESP_LOGI("spa", "18-byte msg: [1]=%02X [16]=%02X", data[1], data[16]);
       uint8_t prog = data[16];
       if (prog <= 4 && prog != program_id_) {
         program_id_ = prog;
-        ESP_LOGI("spa", "Program: %d", prog);
+        ESP_LOGI("spa", "Program from spa: %d", prog);
+        // Just publish state, don't trigger set_action (would cause loop)
         if (program_select_) {
-          auto call = program_select_->make_call();
-          call.set_index(prog);
-          call.perform();
+          static const char* prog_names[] = {"Away", "Standard", "Energy", "Super Energy", "Weekend"};
+          program_select_->publish_state(prog_names[prog]);
         }
       }
       return;
     }
 
-    // Status message (78 bytes) - only parse type=0x00 messages (actual status)
-    // type=0x01 messages have different layout (config data)
+    // Status message (78 bytes) - only parse actual status messages
+    // byte[6]=0x0A is status, byte[6]=0x0B is config dump (ignore)
     if (len == 78) {
+      if (data[6] != 0x0A) {
+        ESP_LOGD("spa", "78-byte config msg (ignored): byte[6]=%02X", data[6]);
+        return;
+      }
+
       uint8_t msg_type = data[17];
       uint8_t msg_sub = data[18];
-      ESP_LOGI("spa", "78-byte msg: type=%02X sub=%02X", msg_type, msg_sub);
+      ESP_LOGD("spa", "78-byte status: type=%02X sub=%02X", msg_type, msg_sub);
 
       if (msg_type == 0x00) {
         // Log key bytes for debugging
@@ -311,46 +325,56 @@ class SpaProtocol : public Component, public UARTDevice {
     bool new_heating = (data[22] & 0x20) || (data[42] & 0x04);  // Different bit for heating
     bool new_light = (data[69] == 0x01);
 
-    // Temperature
-    float new_target = 0, new_actual = 0;
-    if (data[37] != 0 || data[38] != 0) {
+    // Temperature - only parse if temp data is present
+    float new_target = target_temp_;  // Keep existing value by default
+    float new_actual = actual_temp_;
+    bool temp_valid = (data[37] != 0 || data[38] != 0);
+    if (temp_valid) {
       uint16_t target_raw = (data[37] << 8) | data[38];
       new_target = target_raw / 18.0;
       uint16_t actual_raw = (data[39] << 8) | data[40];
       new_actual = actual_raw / 18.0;
     }
 
-    // Update entities on change
-    if (new_light != light_state_) {
+    // On first status message, publish all states to clear "Unknown"
+    bool first = !first_status_received_;
+    if (first) {
+      first_status_received_ = true;
+      ESP_LOGI("spa", "First status received, publishing all states");
+    }
+
+    // Update entities on change (or first message)
+    if (first || new_light != light_state_) {
       light_state_ = new_light;
       ESP_LOGI("spa", "Light: %s", light_state_ ? "ON" : "OFF");
       if (light_switch_) light_switch_->publish_state(light_state_);
     }
 
-    if (new_pump != pump_state_) {
+    if (first || new_pump != pump_state_) {
       pump_state_ = new_pump;
       ESP_LOGI("spa", "Pump: %s", pump_state_ ? "ON" : "OFF");
       if (pump_switch_) pump_switch_->publish_state(pump_state_);
     }
 
-    if (new_circ != circ_state_) {
+    if (first || new_circ != circ_state_) {
       circ_state_ = new_circ;
       ESP_LOGI("spa", "Circulation: %s", circ_state_ ? "ON" : "OFF");
       if (circ_switch_) circ_switch_->publish_state(circ_state_);
     }
 
-    if (new_heating != heating_state_) {
+    if (first || new_heating != heating_state_) {
       heating_state_ = new_heating;
       ESP_LOGI("spa", "Heating: %s", heating_state_ ? "ON" : "OFF");
     }
 
-    if (new_standby != standby_state_) {
+    if (first || new_standby != standby_state_) {
       standby_state_ = new_standby;
       ESP_LOGI("spa", "Standby: %s", standby_state_ ? "ON" : "OFF");
       if (standby_sensor_) standby_sensor_->publish_state(standby_state_);
     }
 
-    if (abs(new_target - target_temp_) > 0.1 || abs(new_actual - actual_temp_) > 0.1) {
+    // Only update temperature if valid data was received
+    if (temp_valid && (first || abs(new_target - target_temp_) > 0.1 || abs(new_actual - actual_temp_) > 0.1)) {
       target_temp_ = new_target;
       actual_temp_ = new_actual;
       ESP_LOGI("spa", "Temp: target=%.1f actual=%.1f", target_temp_, actual_temp_);
