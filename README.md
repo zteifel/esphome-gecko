@@ -5,12 +5,12 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 ## Architecture
 
 ```
-┌─────────────────┐     UART      ┌─────────────────┐     I2C      ┌─────────────┐
-│   ESP32-S2      │◄────────────►│  Arduino Nano    │◄───────────►│  Gecko Spa  │
+┌─────────────────┐     UART      ┌──────────────────┐     I2C     ┌─────────────┐
+│   ESP32-S2      │◄─────────────►│  Arduino Nano    │◄───────────►│  Gecko Spa  │
 │                 │   (115200)    │   (I2C Proxy)    │   (0x17)    │             │
 │ - All protocol  │               │                  │             │             │
 │   logic         │  TX:hex\n     │ - Hex decode     │             │             │
-│ - Home Assistant│  ────────►   │ - Forward to I2C │             │             │
+│ - Home Assistant│  ─────────►   │ - Forward to I2C │             │             │
 │ - OTA updates   │               │                  │             │             │
 │                 │  RX:len:hex\n │ - Forward I2C RX │             │             │
 │                 │  ◄────────    │   as hex         │             │             │
