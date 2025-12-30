@@ -21,27 +21,30 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 
 ## Table of Contents
 
-1. [ESPHome Installation](#esphome-installation)
+1. [Installation](#installation)
 2. [Hardware Build](#hardware-build)
-3. [Software Build & Upload](#software-build--upload)
-4. [UART Proxy Protocol](#uart-proxy-protocol)
-5. [I2C Protocol](#i2c-protocol)
-6. [Buy me a coffee](#buy-me-a-coffee)
-7. [Credits](#credits)
+3. [UART Proxy Protocol](#uart-proxy-protocol)
+4. [I2C Protocol](#i2c-protocol)
+5. [Buy me a coffee](#buy-me-a-coffee)
+6. [Credits](#credits)
 
 ---
 
-## ESPHome Installation
-
-This integration can be installed as an ESPHome external component directly from GitHub.
+## Installation
 
 ### Quick Start
 
 1. **Set up hardware** - See [Hardware Build](#hardware-build) section below
 
-2. **Flash the Arduino** - See [Arduino Nano Clone Firmware](#arduino-nano-clone-firmware)
+2. **Flash the Arduino Nano** - Install PlatformIO and upload the I2C proxy firmware:
+   ```bash
+   pip install platformio
+   cd arduino
+   pio run -t upload
+   ```
+   > **Note:** The `platformio.ini` includes `-DTWI_BUFFER_LENGTH=128 -DBUFFER_LENGTH=128` to handle 78-byte I2C messages. This is critical - the default Arduino Wire buffer is only 32 bytes.
 
-3. **Create your ESPHome configuration** using this template:
+3. **Create your ESPHome configuration** - This component can be installed directly from GitHub:
 
 ```yaml
 substitutions:
@@ -240,76 +243,6 @@ Credits to agittins for the pictures
     │                                                 │
     └─────────────────────────────────────────────────┘
 ```
-
----
-
-## Software Build & Upload
-
-### Requirements
-
-- Python 3.8+
-- PlatformIO Core
-- ESPHome
-
-### Installation
-
-```bash
-# Create Python virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install ESPHome
-pip install esphome
-
-# Install PlatformIO (for Arduino)
-pip install platformio
-```
-
-### Arduino Nano Clone Firmware
-
-1. Navigate to Arduino directory:
-   ```bash
-   cd arduino
-   ```
-
-2. Build and upload:
-   ```bash
-   pio run -t upload
-   ```
-
-**Critical Build Flag:** The `platformio.ini` includes `-DTWI_BUFFER_LENGTH=128 -DBUFFER_LENGTH=128` to handle 78-byte I2C messages from the spa. Default Arduino Wire buffer is only 32 bytes.
-
-### ESPHome Firmware
-
-1. Navigate to ESPHome directory:
-   ```bash
-   cd esphome
-   ```
-
-2. Create secrets file:
-   ```bash
-   cp secrets.yaml.template secrets.yaml
-   # Edit secrets.yaml with your values
-   ```
-
-3. Generate API encryption key:
-   ```bash
-   openssl rand -base64 32
-   ```
-
-4. Build and upload (first time via USB):
-   ```bash
-   esphome run spa-controller.yaml
-   ```
-
-5. Subsequent updates via OTA:
-   ```bash
-   esphome run spa-controller.yaml --device <IP_ADDRESS>
-   ```
-
-### Home Assistant Integration
-
-After uploading, the device will appear in Home Assistant under **Settings → Devices & Services → ESPHome**. Add it using the API encryption key from your `secrets.yaml`.
 
 ---
 
