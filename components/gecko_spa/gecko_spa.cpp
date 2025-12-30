@@ -352,11 +352,11 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
   struct tm *timeinfo = ::localtime(&now);
   int today = days_since_2000(timeinfo->tm_mday, timeinfo->tm_mon + 1, timeinfo->tm_year - 100);
 
-  // Notification entries start at byte 17, each entry is 6 bytes:
+  // Notification entries start at byte 16, each entry is 6 bytes:
   // [ID] [DD] [MM] [YY] [INTERVAL_LO] [INTERVAL_HI]
   // ID: 0x01=Rinse Filter, 0x02=Clean Filter, 0x03=Change Water, 0x04=Spa Checkup
   for (int i = 0; i < 4; i++) {
-    int offset = 17 + (i * 6);
+    int offset = 16 + (i * 6);
     uint8_t id = data[offset];
     uint8_t day = data[offset + 1];
     uint8_t month = data[offset + 2];
