@@ -12,7 +12,7 @@ GeckoSpaClimate = gecko_spa_ns.class_(
 
 CONF_GECKO_SPA_ID = "gecko_spa_id"
 
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
+CONFIG_SCHEMA = climate._CLIMATE_SCHEMA.extend(
     {
         cv.GenerateID(): cv.declare_id(GeckoSpaClimate),
         cv.GenerateID(CONF_GECKO_SPA_ID): cv.use_id(GeckoSpa),
