@@ -26,7 +26,9 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 3. [UART Proxy Protocol](#uart-proxy-protocol)
 4. [I2C Protocol](#i2c-protocol)
 5. [Buy me a coffee](#buy-me-a-coffee)
-6. [Credits](#credits)
+6. [TODO](#todo)
+7. [Troubleshooting](#troubleshoot)
+8. [Credits](#credits)
 
 ---
 
