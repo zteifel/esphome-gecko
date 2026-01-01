@@ -1,6 +1,6 @@
 # Gecko Spa Controller
 
-Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano Clone as an I2C proxy.
+Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano Clone as an I2C proxy. Tested together with a Gecko IN.YE-3-H3.0 (YE-3-CE) spa controller.
 
 ## Architecture
 
