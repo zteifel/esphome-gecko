@@ -2,6 +2,7 @@
 
 #include <string>
 #include "esphome/core/component.h"
+#include "esphome/core/gpio.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/switch/switch.h"
@@ -39,6 +40,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void set_change_water_sensor(text_sensor::TextSensor *s) { change_water_sensor_ = s; }
   void set_spa_checkup_sensor(text_sensor::TextSensor *s) { spa_checkup_sensor_ = s; }
   void set_spa_time_sensor(text_sensor::TextSensor *s) { spa_time_sensor_ = s; }
+  void set_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
 
   // Command methods
   void send_light_command(bool on);
@@ -47,6 +49,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void send_program_command(uint8_t prog);
   void send_temperature_command(float temp_c);
   void request_status();
+  void reset_arduino();
 
   // State getters
   bool get_light_state() { return light_state_; }
@@ -70,6 +73,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   text_sensor::TextSensor *change_water_sensor_{nullptr};
   text_sensor::TextSensor *spa_checkup_sensor_{nullptr};
   text_sensor::TextSensor *spa_time_sensor_{nullptr};
+  GPIOPin *reset_pin_{nullptr};
 
   // State
   bool light_state_{false};
@@ -84,6 +88,8 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   float actual_temp_{0};
   uint32_t last_i2c_time_{0};
   uint32_t last_go_send_time_{0};
+  uint32_t reset_start_time_{0};
+  bool reset_in_progress_{false};
 
   // UART buffer
   char uart_buffer_[512];

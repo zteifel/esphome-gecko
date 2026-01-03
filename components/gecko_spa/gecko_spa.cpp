@@ -15,9 +15,22 @@ const uint8_t GeckoSpa::GO_MESSAGE[15] = {
 
 void GeckoSpa::setup() {
   ESP_LOGI(TAG, "GeckoSpa starting");
+  if (reset_pin_) {
+    reset_pin_->setup();
+    reset_pin_->digital_write(true);  // RST is active LOW, keep HIGH
+  }
 }
 
 void GeckoSpa::loop() {
+  // Handle non-blocking reset pulse completion (100ms)
+  if (reset_in_progress_ && (millis() - reset_start_time_ > 100)) {
+    if (reset_pin_) {
+      reset_pin_->digital_write(true);  // Release reset (HIGH)
+    }
+    reset_in_progress_ = false;
+    ESP_LOGI(TAG, "Arduino reset complete");
+  }
+
   // Read UART lines from Arduino proxy
   while (available()) {
     char c = read();
@@ -38,6 +51,7 @@ void GeckoSpa::loop() {
     if (connected_sensor_)
       connected_sensor_->publish_state(false);
     ESP_LOGW(TAG, "Spa connection lost (timeout)");
+    reset_arduino();  // Reset Arduino on disconnect
   }
 
   // Send GO keep-alive every 23 seconds (triggers handshake sequence)
@@ -105,6 +119,21 @@ void GeckoSpa::send_temperature_command(float temp_c) {
 
 void GeckoSpa::request_status() {
   write_str("PING\n");
+}
+
+void GeckoSpa::reset_arduino() {
+  if (!reset_pin_) {
+    ESP_LOGW(TAG, "Reset pin not configured");
+    return;
+  }
+  if (reset_in_progress_) {
+    ESP_LOGD(TAG, "Reset already in progress");
+    return;
+  }
+  ESP_LOGI(TAG, "Resetting Arduino");
+  reset_pin_->digital_write(false);  // Pull LOW to reset
+  reset_start_time_ = millis();
+  reset_in_progress_ = true;
 }
 
 uint8_t GeckoSpa::calc_checksum(const uint8_t *data, uint8_t len) {
