@@ -1,7 +1,7 @@
 <p align="center"><img src="https://github.com/zteifel/esphome-gecko/blob/master/logo.png" alt="Smart Spa Heating" width="250"></p>
 
 
-Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano Clone as an I2C proxy. Tested together with a Gecko IN.YE-3-H3.0 (YE-3-CE) spa controller.
+Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano Clone as an I2C proxy. Tested together with a Gecko IN.YE-3-H3.0 (YE-3-CE) spa controller. Feel free to combine with my home assistant integration for smart heating based on electricty price [Smart Spa Heating Integration](https://github.com/zteifel/smart-spa-heating).
 
 ## Architecture
 
@@ -18,7 +18,7 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 └─────────────────┘               └──────────────────┘             └─────────────┘
 ```
 
-**Key Design Decision:** The Arduino acts as a "dumb" I2C proxy. All protocol encoding/decoding happens on the ESP32, which can be updated over WiFi (OTA). This eliminates the need to physically access the spa for firmware updates.
+**Key Design Decision:** The Arduino acts as a "dumb" I2C proxy. All protocol encoding/decoding happens on the ESP32, which can be updated over WiFi (OTA). This eliminates the need to physically access the spa for firmware updates and make uses of the arduino i2c capability how handlings the multi-master and large i2c messages.
 
 ## Table of Contents
 
