@@ -5,6 +5,8 @@
 #include "esphome/core/gpio.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/climate/climate.h"
+#include "esphome/components/datetime/date_entity.h"
+#include "esphome/components/datetime/datetime_entity.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/select/select.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -35,11 +37,16 @@ class GeckoSpa : public Component, public uart::UARTDevice {
     bs->publish_state(connected_);
   }
   void set_climate(climate::Climate *cl) { climate_ = cl; }
-  void set_rinse_filter_sensor(text_sensor::TextSensor *s) { rinse_filter_sensor_ = s; }
-  void set_clean_filter_sensor(text_sensor::TextSensor *s) { clean_filter_sensor_ = s; }
-  void set_change_water_sensor(text_sensor::TextSensor *s) { change_water_sensor_ = s; }
-  void set_spa_checkup_sensor(text_sensor::TextSensor *s) { spa_checkup_sensor_ = s; }
-  void set_spa_time_sensor(text_sensor::TextSensor *s) { spa_time_sensor_ = s; }
+  void set_rinse_filter_text_sensor(text_sensor::TextSensor *s) { rinse_filter_text_sensor_ = s; }
+  void set_clean_filter_text_sensor(text_sensor::TextSensor *s) { clean_filter_text_sensor_ = s; }
+  void set_change_water_text_sensor(text_sensor::TextSensor *s) { change_water_text_sensor_ = s; }
+  void set_spa_checkup_text_sensor(text_sensor::TextSensor *s) { spa_checkup_text_sensor_ = s; }
+  void set_spa_time_text_sensor(text_sensor::TextSensor *s) { spa_time_text_sensor_ = s; }
+  void set_rinse_filter_date(datetime::DateEntity *d) { rinse_filter_date_ = d; }
+  void set_clean_filter_date(datetime::DateEntity *d) { clean_filter_date_ = d; }
+  void set_change_water_date(datetime::DateEntity *d) { change_water_date_ = d; }
+  void set_spa_checkup_date(datetime::DateEntity *d) { spa_checkup_date_ = d; }
+  void set_spa_time_datetime(datetime::DateTimeEntity *dt) { spa_time_datetime_ = dt; }
   void set_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
 
   // Command methods
@@ -68,11 +75,16 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   binary_sensor::BinarySensor *standby_sensor_{nullptr};
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   climate::Climate *climate_{nullptr};
-  text_sensor::TextSensor *rinse_filter_sensor_{nullptr};
-  text_sensor::TextSensor *clean_filter_sensor_{nullptr};
-  text_sensor::TextSensor *change_water_sensor_{nullptr};
-  text_sensor::TextSensor *spa_checkup_sensor_{nullptr};
-  text_sensor::TextSensor *spa_time_sensor_{nullptr};
+  text_sensor::TextSensor *rinse_filter_text_sensor_{nullptr};
+  text_sensor::TextSensor *clean_filter_text_sensor_{nullptr};
+  text_sensor::TextSensor *change_water_text_sensor_{nullptr};
+  text_sensor::TextSensor *spa_checkup_text_sensor_{nullptr};
+  text_sensor::TextSensor *spa_time_text_sensor_{nullptr};
+  datetime::DateEntity *rinse_filter_date_{nullptr};
+  datetime::DateEntity *clean_filter_date_{nullptr};
+  datetime::DateEntity *change_water_date_{nullptr};
+  datetime::DateEntity *spa_checkup_date_{nullptr};
+  datetime::DateTimeEntity *spa_time_datetime_{nullptr};
   GPIOPin *reset_pin_{nullptr};
 
   // State
@@ -122,6 +134,26 @@ class GeckoSpaClimate : public Component, public climate::Climate {
   void control(const climate::ClimateCall &call) override;
 
  protected:
+  GeckoSpa *parent_;
+};
+
+class GeckoSpaDateTime : public Component, public datetime::DateTimeEntity {
+ public:
+  void set_parent(GeckoSpa *parent) { parent_ = parent; }
+
+  void control(const datetime::DateTimeCall &call) override;
+
+ protected:
+  GeckoSpa *parent_;
+};
+
+class GeckoSpaDate : public Component, public datetime::DateEntity {
+ public:
+  void set_parent(GeckoSpa *parent) { parent_ = parent; }
+
+  void control(const datetime::DateCall &call) override;
+
+  protected:
   GeckoSpa *parent_;
 };
 

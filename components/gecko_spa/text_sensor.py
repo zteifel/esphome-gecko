@@ -31,12 +31,12 @@ async def to_code(config):
 
     sensor_type = config[CONF_SENSOR_TYPE]
     if sensor_type == "spa_time":
-        cg.add(parent.set_spa_time_sensor(var))
+        cg.add(parent.set_spa_time_text_sensor(var))
     elif sensor_type == "rinse_filter":
-        cg.add(parent.set_rinse_filter_sensor(var))
+        cg.add(parent.set_rinse_filter_text_sensor(var))
     elif sensor_type == "clean_filter":
-        cg.add(parent.set_clean_filter_sensor(var))
+        cg.add(parent.set_clean_filter_text_sensor(var))
     elif sensor_type == "change_water":
-        cg.add(parent.set_change_water_sensor(var))
+        cg.add(parent.set_change_water_text_sensor(var))
     elif sensor_type == "spa_checkup":
-        cg.add(parent.set_spa_checkup_sensor(var))
+        cg.add(parent.set_spa_checkup_text_sensor(var))

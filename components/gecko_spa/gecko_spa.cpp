@@ -239,10 +239,15 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
 
     ESP_LOGD(TAG, "Spa clock: %02d/%02d %02d:%02d:%02d", day, month, hour, minute, second);
 
-    if (spa_time_sensor_) {
+    if (spa_time_text_sensor_) {
       char time_str[20];
       snprintf(time_str, sizeof(time_str), "%02d/%02d %02d:%02d:%02d", day, month, hour, minute, second);
-      spa_time_sensor_->publish_state(time_str);
+      spa_time_text_sensor_->publish_state(time_str);
+    }
+    if (spa_time_datetime_) {
+      datetime::DateTimeCall dt_call{spa_time_datetime_};
+      dt_call.set_datetime(2026, month, day, hour, minute, second);
+      // spa_time_datetime_->publish_state();
     }
 
     send_i2c_message(ACK_MESSAGE, 15);
@@ -478,24 +483,34 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
     ESP_LOGI(TAG, "Notification %d: reset=%02d/%02d/%02d interval=%d due=%s",
              id, reset_day, reset_month, reset_year, interval, date_str);
 
-    text_sensor::TextSensor *sensor = nullptr;
+    text_sensor::TextSensor *t_sensor = nullptr;
+    datetime::DateEntity *d_sensor = nullptr;
     switch (id) {
       case 0x01:
-        sensor = rinse_filter_sensor_;
+        t_sensor = rinse_filter_text_sensor_;
+        d_sensor = rinse_filter_date_;
         break;
       case 0x02:
-        sensor = clean_filter_sensor_;
+        t_sensor = clean_filter_text_sensor_;
+        d_sensor = clean_filter_date_;
         break;
       case 0x03:
-        sensor = change_water_sensor_;
+        t_sensor = change_water_text_sensor_;
+        d_sensor = change_water_date_;
         break;
       case 0x04:
-        sensor = spa_checkup_sensor_;
+        t_sensor = spa_checkup_text_sensor_;
+        d_sensor = spa_checkup_date_;
         break;
     }
 
-    if (sensor) {
-      sensor->publish_state(date_str);
+    if (t_sensor) {
+      t_sensor->publish_state(date_str);
+    }
+    if (d_sensor) {
+      datetime::DateCall d_call{d_sensor};// = new datetime::DateCall(d_sensor);
+      d_call.set_date(reset_tm.tm_mday, reset_tm.tm_mon + 1, 1900 + reset_tm.tm_year);
+      // d_sensor->publish_state();
     }
   }
 }
@@ -526,6 +541,25 @@ void GeckoSpaClimate::control(const climate::ClimateCall &call) {
     this->target_temperature = temp;
     parent_->send_temperature_command(temp);
   }
+  this->publish_state();
+}
+
+// GeckoSpaDate implementation
+void GeckoSpaDateTime::control(const datetime::DateTimeCall &call) {
+  this->year_ = call.get_year().value();
+  this->month_ = call.get_month().value();
+  this->day_ = call.get_day().value();
+  this->hour_ = call.get_hour().value();
+  this->minute_ = call.get_minute().value();
+  this->second_ = call.get_second().value();
+  this->publish_state();
+}
+
+// GeckoSpaDate implementation
+void GeckoSpaDate::control(const datetime::DateCall &call) {
+  this->year_ = call.get_year().value();
+  this->month_ = call.get_month().value();
+  this->day_ = call.get_day().value();
   this->publish_state();
 }
 
