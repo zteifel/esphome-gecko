@@ -95,30 +95,67 @@ void GeckoSpa::send_circ_command(bool on) {
 }
 
 void GeckoSpa::send_pump1_command(uint8_t state) {
-  // P1 function ID: 0x03
-  // State: 0=OFF, 2=ON/HIGH (P1 uses 0x02 for ON, not 0x01)
-  uint8_t state_val = (state == 0) ? 0x00 : 0x02;
+  uint8_t current = 0x00;
+
+  if (this->pump1_switch_ != nullptr && this->pump1_switch_->state)
+    current |= 0x02;
+
+  if (this->pump2_switch_ != nullptr && this->pump2_switch_->state)
+    current |= 0x08;
+
+  if (state == 0)
+    current &= ~0x02;
+  else
+    current |= 0x02;
 
   uint8_t cmd[20] = {
       0x17, 0x0A, 0x00, 0x00, 0x00, 0x17, 0x09, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x06, 0x46, 0x52, 0x51,
-      0x01, 0x03, state_val, 0x00};
+      0x00, 0x00, 0x00, 0x00,
+      0x06,
+      0x46,
+      0x41, 0x42,
+      0x01,
+      0x03,
+      current,
+      0x00
+  };
+
   cmd[19] = calc_checksum(cmd, 20);
   send_i2c_message(cmd, 20);
-  ESP_LOGI(TAG, "Sent P1 state=%d command (val=0x%02X)", state, state_val);
+
+  ESP_LOGI(TAG, "Sent P1 command shared-pos=0x0103 state=%d combined=0x%02X", state, current);
 }
 
 void GeckoSpa::send_pump2_command(uint8_t state) {
-  // P2 function ID: 0x04 (EXPERIMENTAL - sequential from P1)
-  uint8_t state_val = (state == 0) ? 0x00 : 0x02;
+  uint8_t current = 0x00;
+
+  if (this->pump1_switch_ != nullptr && this->pump1_switch_->state)
+    current |= 0x02;
+
+  if (this->pump2_switch_ != nullptr && this->pump2_switch_->state)
+    current |= 0x08;
+
+  if (state == 0)
+    current &= ~0x08;
+  else
+    current |= 0x08;
 
   uint8_t cmd[20] = {
       0x17, 0x0A, 0x00, 0x00, 0x00, 0x17, 0x09, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x06, 0x46, 0x52, 0x51,
-      0x01, 0x04, state_val, 0x00};
+      0x00, 0x00, 0x00, 0x00,
+      0x06,
+      0x46,
+      0x41, 0x42,
+      0x01,
+      0x03,
+      current,
+      0x00
+  };
+
   cmd[19] = calc_checksum(cmd, 20);
   send_i2c_message(cmd, 20);
-  ESP_LOGI(TAG, "Sent P2 state=%d command (val=0x%02X) [EXPERIMENTAL]", state, state_val);
+
+  ESP_LOGI(TAG, "Sent P2 command shared-pos=0x0103 state=%d combined=0x%02X", state, current);
 }
 
 void GeckoSpa::send_pump3_command(uint8_t state) {
