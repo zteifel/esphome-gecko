@@ -24,12 +24,13 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 
 1. [Installation](#installation)
 2. [Hardware Build](#hardware-build)
-3. [UART Proxy Protocol](#uart-proxy-protocol)
-4. [I2C Protocol](#i2c-protocol)
-5. [Buy me a coffee](#buy-me-a-coffee)
-6. [TODO](#todo)
-7. [Troubleshooting](#troubleshoot)
-8. [Credits](#credits)
+3. [Direct I2C Transport (No Arduino Required)](#direct-i2c-transport-no-arduino-required)
+4. [UART Proxy Protocol](#uart-proxy-protocol)
+5. [I2C Protocol](#i2c-protocol)
+6. [Buy me a coffee](#buy-me-a-coffee)
+7. [TODO](#todo)
+8. [Troubleshooting](#troubleshoot)
+9. [Credits](#credits)
 
 ---
 
@@ -265,6 +266,71 @@ After installation, you'll have these entities:
 | Spa Checkup Due | Text Sensor | Due date for spa checkup (YYYY-MM-DD) |
 | Refresh Spa Status | Button | Manually request status update |
 | Reset Arduino | Button | Reset the Arduino I2C proxy remotely |
+
+---
+
+## Direct I2C Transport (No Arduino Required)
+
+`gecko_spa` supports a second transport that skips the Arduino entirely: the ESP32
+owns the spa's I2C bus directly, toggling between slave and master roles itself
+(listening for the spa's unsolicited status/handshake traffic, then briefly becoming
+bus master to push commands or acknowledgments). This removes the Arduino, its UART
+link, the voltage-divider level shifting, and the Arduino reset wiring from the build
+entirely - just SDA/SCL/GND run straight from the ESP32 to the spa's I2C connector.
+
+### Hardware requirement
+
+This transport needs a chip whose I2C peripheral supports being addressed as a slave
+via ESP-IDF's newer "I2C Slave Driver v2" - not every ESP32 board/SoC variant
+necessarily does, and it's **not available at all under `framework: arduino`**, only
+under `framework: esp-idf`. It has been tested working on the **Arduino Nano ESP32**
+board. If your board's chip doesn't support this, or you'd rather stay on
+`framework: arduino`, use the UART/Arduino-proxy transport documented in the rest of
+this README instead - both are fully supported side by side in this component.
+
+### Configuration
+
+Instead of `uart_id:`, give `gecko_spa:` an `sda:`/`scl:` pin pair (and optionally
+`address:`, which defaults to `0x17`). You also need `framework: esp-idf` under
+`esp32:`, plus one `sdkconfig_options` entry to turn on the slave driver v2 the
+component relies on:
+
+```yaml
+esp32:
+  board: arduino_nano_esp32
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_I2C_ENABLE_SLAVE_DRIVER_VERSION_2: "y"
+
+# No uart: block, no reset_pin: - none of it is needed for this transport.
+gecko_spa:
+  id: spa
+  sda: GPIO11
+  scl: GPIO12
+  address: 0x17   # optional - this is the default
+```
+
+Everything else in your configuration (`climate:`, `switch:`, `select:`,
+`binary_sensor:`, `text_sensor:` platforms under `gecko_spa`) stays exactly the same
+regardless of which transport you pick - the transport only decides how `gecko_spa`
+talks to the spa, not what entities you get in Home Assistant.
+
+### Automatic configuration validation
+
+`gecko_spa` requires **exactly one** transport and checks this for you at config-check
+time, with a specific error message for each mistake rather than a generic failure:
+
+| Mistake | What you'll see |
+|---|---|
+| Neither `uart_id:` nor `sda:`/`scl:` given | *"gecko_spa requires a transport - specify either 'uart_id' (Arduino I2C-proxy over UART) or 'sda' and 'scl' (direct I2C)."* |
+| Both given at once | *"gecko_spa supports exactly one transport at a time - specify either 'uart_id' ... or 'sda'/'scl' ..., not both."* |
+| Only one of `sda:`/`scl:` given | *"Direct I2C transport requires both 'sda' and 'scl'."* |
+| `sda:`/`scl:` given, but `framework:` isn't `esp-idf` | *"Direct I2C transport requires 'framework: esp-idf' under esp32: - the raw I2C driver it uses (to toggle slave/master roles) isn't available under framework: arduino. Use the UART transport (uart_id:) instead, or switch frameworks."* |
+
+This means picking the wrong combination fails fast during `esphome config`/`esphome
+compile`, before you ever flash the device, with a message that tells you exactly what
+to change.
 
 ---
 

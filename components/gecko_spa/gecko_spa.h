@@ -5,13 +5,35 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/preferences.h"
-#include "esphome/components/uart/uart.h"
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/select/select.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/sensor/sensor.h"
+
+// Two mutually exclusive transports to the spa's I2C bus:
+//   - UART: bridged through an Arduino acting as a "dumb" I2C proxy (the
+//     original design - see uart_ below). Only usable if uart_id: was
+//     actually configured - __init__.py defines USE_GECKO_SPA_UART only in
+//     that case, since ESPHome only copies a component's source files (here,
+//     uart's own headers) into the build when that component appears in the
+//     config at all, and uart_id: is optional.
+//   - Direct I2C: the ESP32 owns the I2C port itself via a raw ESP-IDF driver,
+//     toggling between slave and master roles - esphome::i2c doesn't support
+//     that role-swap, and the driver calls involved aren't available under
+//     framework: arduino, so this whole path is compiled out unless
+//     USE_ESP_IDF is defined (i.e. framework: esp-idf).
+#ifdef USE_GECKO_SPA_UART
+#include "esphome/components/uart/uart.h"
+#endif
+#ifdef USE_ESP_IDF
+#include "driver/i2c_slave.h"
+#include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include <atomic>
+#endif
 
 namespace esphome {
 namespace gecko_spa {
@@ -69,11 +91,29 @@ enum class NotifDateFormat : uint8_t {
   D_M_Y = 1
 };
 
-class GeckoSpa : public Component, public uart::UARTDevice {
+class GeckoSpa : public Component {
  public:
   void setup() override;
   void loop() override;
+  void on_shutdown() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
+
+  // Transport A: Arduino I2C-proxy over UART. Composition rather than
+  // inheriting uart::UARTDevice, since exactly one of the two transports is
+  // active for a given device and the other must add zero footprint.
+#ifdef USE_GECKO_SPA_UART
+  void set_uart_parent(uart::UARTComponent *parent) { uart_ = parent; }
+#endif
+  bool has_uart() const { return uart_ != nullptr; }
+
+#ifdef USE_ESP_IDF
+  // Transport B: direct I2C (raw ESP-IDF port, not esphome::i2c - see
+  // includes above). Only usable under framework: esp-idf; enforced in
+  // __init__.py's config validation.
+  void set_i2c_sda_pin(int pin) { i2c_sda_pin_ = static_cast<gpio_num_t>(pin); }
+  void set_i2c_scl_pin(int pin) { i2c_scl_pin_ = static_cast<gpio_num_t>(pin); }
+  void set_i2c_address(uint8_t address) { i2c_address_ = address; }
+#endif
 
   // Entity setters - switches (controllable)
   void set_light_switch(switch_::Switch *sw) { light_switch_ = sw; }
@@ -118,7 +158,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void send_program_command(uint8_t prog);
   void send_temperature_command(float temp_c);
   void request_status();
-  void reset_arduino();
+  void reset_arduino();  // Only meaningful for the UART transport - no-op without reset_pin_
 
   // State getters
   bool get_light_state() { return light_state_; }
@@ -193,9 +233,51 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   uint8_t status_version_{0};   // e.g., 81 from inYT_S81.xml
   const GeckoLogOffsets *log_offsets_{&GECKO_LOG_OFFSETS_V51};  // Default to v51+
 
-  // UART buffer
+  // --- Transport A: UART (Arduino I2C proxy) ---------------------------
+  // Stored type-erased so this member (and the has_uart() null-check above)
+  // compile even when USE_GECKO_SPA_UART isn't defined and uart::UARTComponent
+  // isn't available - only the code that actually calls methods on it needs
+  // to be behind that #ifdef (see gecko_spa.cpp).
+  void *uart_{nullptr};
   char uart_buffer_[512];
   uint16_t uart_pos_{0};
+  uint8_t hex_to_byte(char high, char low);
+  void process_proxy_message(const char *msg);
+
+#ifdef USE_ESP_IDF
+  // --- Transport B: direct I2C (raw ESP-IDF port - see includes above) ---
+  gpio_num_t i2c_sda_pin_{GPIO_NUM_NC};
+  gpio_num_t i2c_scl_pin_{GPIO_NUM_NC};
+  uint8_t i2c_address_{0x17};
+  static const i2c_port_num_t I2C_PORT{I2C_NUM_0};
+
+  // I2C slave state (I2C Slave v2 driver - requires CONFIG_I2C_ENABLE_SLAVE_DRIVER_VERSION_2
+  // set via sdkconfig_options in YAML). Active most of the time, listening for
+  // unsolicited writes from the spa's own controller board.
+  i2c_slave_dev_handle_t i2c_slave_handle_{nullptr};
+  QueueHandle_t i2c_rx_queue_{nullptr};   // carries just the received length (uint32_t) -
+                                          // the bytes themselves are copied into i2c_rx_buf_
+                                          // by the ISR callback, since v2's callback buffer
+                                          // is only valid for the duration of the callback
+  uint8_t i2c_rx_buf_[256];
+  static const uint8_t I2C_ACK_BYTES[2];  // {0x00, 0x00} - reply to the spa's follow-up read
+
+  // Debug visibility into the on-request ack write, which happens in ISR context
+  // (i2c_slave_on_request_cb) where ESP_LOG* is not safe to call. The ISR just
+  // bumps this atomic counter; loop() compares it against i2c_ack_logged_count_
+  // and logs the (fixed) ack bytes on the main task once it changes.
+  std::atomic<uint32_t> i2c_ack_sent_count_{0};
+  uint32_t i2c_ack_logged_count_{0};
+
+  void i2c_slave_install_();
+  void i2c_slave_uninstall_();
+  static bool IRAM_ATTR i2c_slave_on_receive_cb(i2c_slave_dev_handle_t handle,
+                                                 const i2c_slave_rx_done_event_data_t *edata,
+                                                 void *user_data);
+  static bool IRAM_ATTR i2c_slave_on_request_cb(i2c_slave_dev_handle_t handle,
+                                                 const i2c_slave_request_event_data_t *edata,
+                                                 void *user_data);
+#endif
 
   // Multi-part message buffer (byte[10]=0x01 means more coming, 0x00 means last)
   uint8_t msg_buffer_[512];
@@ -211,8 +293,6 @@ class GeckoSpa : public Component, public uart::UARTDevice {
 
   uint8_t calc_checksum(const uint8_t *data, uint8_t len);
   void send_i2c_message(const uint8_t *data, uint8_t len);
-  uint8_t hex_to_byte(char high, char low);
-  void process_proxy_message(const char *msg);
   void process_i2c_message(const uint8_t *data, uint8_t len);
   void parse_status_message(const uint8_t *data);
   void parse_notification_message(const uint8_t *data);
