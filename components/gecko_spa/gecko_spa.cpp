@@ -1,5 +1,6 @@
 #include "gecko_spa.h"
 #include "esphome/core/log.h"
+#include <algorithm>
 #include <ctime>
 
 namespace esphome {
@@ -13,12 +14,31 @@ const uint8_t GeckoSpa::GO_MESSAGE[15] = {
     0x00, 0x00, 0x00, 0x00, 0x01, 0x47, 0x4F  // "GO"
 };
 
+#ifdef USE_ESP_IDF
+// Reply sent when the spa reads from us after writing (mirrors the Arduino
+// bridge's requestEvent(), which always answered with two zero bytes).
+const uint8_t GeckoSpa::I2C_ACK_BYTES[2] = {0x00, 0x00};
+#endif
+
 void GeckoSpa::setup() {
   ESP_LOGI(TAG, "GeckoSpa starting");
   if (reset_pin_) {
     reset_pin_->setup();
     reset_pin_->digital_write(true);  // RST is active LOW, keep HIGH
   }
+#ifdef USE_ESP_IDF
+  if (uart_ == nullptr) {
+    i2c_slave_install_();
+  }
+#endif
+}
+
+void GeckoSpa::on_shutdown() {
+#ifdef USE_ESP_IDF
+  if (uart_ == nullptr) {
+    i2c_slave_uninstall_();
+  }
+#endif
 }
 
 void GeckoSpa::loop() {
@@ -31,19 +51,50 @@ void GeckoSpa::loop() {
     ESP_LOGI(TAG, "Arduino reset complete");
   }
 
-  // Read UART lines from Arduino proxy
-  while (available()) {
-    char c = read();
-    if (c == '\n' || c == '\r') {
-      if (uart_pos_ > 0) {
-        uart_buffer_[uart_pos_] = '\0';
-        process_proxy_message(uart_buffer_);
-        uart_pos_ = 0;
+#ifdef USE_GECKO_SPA_UART
+  if (uart_ != nullptr) {
+    // Transport A: read UART lines from Arduino proxy
+    auto *u = static_cast<uart::UARTComponent *>(uart_);
+    while (u->available()) {
+      uint8_t c;
+      u->read_byte(&c);
+      if (c == '\n' || c == '\r') {
+        if (uart_pos_ > 0) {
+          uart_buffer_[uart_pos_] = '\0';
+          process_proxy_message(uart_buffer_);
+          uart_pos_ = 0;
+        }
+      } else if (uart_pos_ < sizeof(uart_buffer_) - 1) {
+        uart_buffer_[uart_pos_++] = (char) c;
       }
-    } else if (uart_pos_ < sizeof(uart_buffer_) - 1) {
-      uart_buffer_[uart_pos_++] = c;
     }
   }
+#endif
+#ifdef USE_ESP_IDF
+  if (uart_ == nullptr) {
+    // Transport B: drain messages received while acting as I2C slave
+    // (unsolicited writes from the spa's own controller board - GO/ACK/
+    // status/config/notifications all arrive this way).
+    if (i2c_rx_queue_ != nullptr) {
+      uint32_t recv_len;
+      while (xQueueReceive(i2c_rx_queue_, &recv_len, 0) == pdTRUE) {
+        uint8_t len = (uint8_t) std::min<uint32_t>(recv_len, sizeof(i2c_rx_buf_));
+        ESP_LOGD(TAG, "I2C RX (raw, %u bytes): %s", len, format_hex_pretty(i2c_rx_buf_, len).c_str());
+        process_i2c_message(i2c_rx_buf_, len);
+      }
+    }
+
+    // Log the on-request ack write from the main task - the ISR that
+    // actually performs it (i2c_slave_on_request_cb) can't safely call
+    // ESP_LOG*.
+    uint32_t ack_sent = i2c_ack_sent_count_.load(std::memory_order_relaxed);
+    if (ack_sent != i2c_ack_logged_count_) {
+      ESP_LOGD(TAG, "I2C TX (ack on request, x%lu): %s", ack_sent - i2c_ack_logged_count_,
+               format_hex_pretty(I2C_ACK_BYTES, sizeof(I2C_ACK_BYTES)).c_str());
+      i2c_ack_logged_count_ = ack_sent;
+    }
+  }
+#endif
 
   // Check connection timeout (1 minute without I2C traffic)
   if (millis() - last_i2c_time_ > 60000) {
@@ -57,7 +108,7 @@ void GeckoSpa::loop() {
     } else if (!reset_in_progress_) {
       // Not connected and not mid-reset: retry with backoff
       // Retry intervals: 30s, 60s, 120s, then every 120s (max 5 retries before giving up)
-      uint32_t backoff = 30000UL * (1 << min(reset_retry_count_, (uint8_t)2));
+      uint32_t backoff = 30000UL * (1 << std::min(reset_retry_count_, (uint8_t)2));
       if (reset_retry_count_ < 5 && (millis() - reset_start_time_ > backoff)) {
         ESP_LOGW(TAG, "Arduino recovery retry %d/%d (backoff %ds)",
                  reset_retry_count_ + 1, 5, backoff / 1000);
@@ -177,7 +228,20 @@ void GeckoSpa::send_temperature_command(float temp_c) {
 }
 
 void GeckoSpa::request_status() {
-  write_str("PING\n");
+#ifdef USE_GECKO_SPA_UART
+  if (uart_ != nullptr) {
+    static_cast<uart::UARTComponent *>(uart_)->write_str("PING\n");
+    return;
+  }
+#endif
+#ifdef USE_ESP_IDF
+  // No dedicated "give me your status now" command is known for this
+  // protocol - the spa pushes status on its own schedule. Sending the same
+  // GO keep-alive used automatically every 23s is the best available manual
+  // nudge to (re)trigger that sequence on demand.
+  ESP_LOGI(TAG, "Manual status request - sending GO");
+  send_i2c_message(GO_MESSAGE, 15);
+#endif
 }
 
 void GeckoSpa::reset_arduino() {
@@ -206,14 +270,152 @@ uint8_t GeckoSpa::calc_checksum(const uint8_t *data, uint8_t len) {
 }
 
 void GeckoSpa::send_i2c_message(const uint8_t *data, uint8_t len) {
-  write_str("TX:");
-  for (uint8_t i = 0; i < len; i++) {
-    char hex[3];
-    sprintf(hex, "%02X", data[i]);
-    write_str(hex);
+#ifdef USE_GECKO_SPA_UART
+  if (uart_ != nullptr) {
+    // Transport A: hex-encode over UART to the Arduino proxy
+    auto *u = static_cast<uart::UARTComponent *>(uart_);
+    u->write_str("TX:");
+    for (uint8_t i = 0; i < len; i++) {
+      char hex[3];
+      sprintf(hex, "%02X", data[i]);
+      u->write_str(hex);
+    }
+    u->write_str("\n");
+    return;
   }
-  write_str("\n");
+#endif
+
+#ifdef USE_ESP_IDF
+  // Transport B: brief role swap - tear down the slave device, become
+  // master just long enough to write the command and read the spa's 2-byte
+  // ack, then resume listening. Mirrors the Arduino bridge's sendToI2C()
+  // Wire.end()/Wire.begin() dance above.
+  ESP_LOGD(TAG, "send_i2c_message: %s", format_hex_pretty(data, len).c_str());
+
+  i2c_slave_uninstall_();
+
+  i2c_master_bus_config_t bus_cfg = {};
+  bus_cfg.i2c_port = I2C_PORT;
+  bus_cfg.sda_io_num = i2c_sda_pin_;
+  bus_cfg.scl_io_num = i2c_scl_pin_;
+  bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
+  bus_cfg.glitch_ignore_cnt = 7;
+  bus_cfg.flags.enable_internal_pullup = true;
+
+  i2c_master_bus_handle_t bus = nullptr;
+  esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "i2c_new_master_bus failed: %s", esp_err_to_name(err));
+    i2c_slave_install_();
+    return;
+  }
+
+  i2c_device_config_t dev_cfg = {};
+  dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  dev_cfg.device_address = i2c_address_;
+  dev_cfg.scl_speed_hz = 100000;
+
+  i2c_master_dev_handle_t dev = nullptr;
+  err = i2c_master_bus_add_device(bus, &dev_cfg, &dev);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "i2c_master_bus_add_device failed: %s", esp_err_to_name(err));
+    i2c_del_master_bus(bus);
+    i2c_slave_install_();
+    return;
+  }
+
+  uint8_t response[2];
+  err = i2c_master_transmit_receive(dev, data, len, response, sizeof(response), 200);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "I2C master write/read failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGD(TAG, "I2C RX (ack from spa): %s", format_hex_pretty(response, sizeof(response)).c_str());
+  }
+
+  i2c_master_bus_rm_device(dev);
+  i2c_del_master_bus(bus);
+
+  i2c_slave_install_();  // resume listening
+#endif
 }
+
+#ifdef USE_ESP_IDF
+// --- Transport B: I2C slave (listening) -------------------------------
+// Active whenever we are not mid-send. Mirrors the Arduino bridge's
+// Wire.begin(SPA_ADDRESS) + onReceive/onRequest. Uses I2C Slave v2
+// (CONFIG_I2C_ENABLE_SLAVE_DRIVER_VERSION_2 must be set in YAML sdkconfig_options) -
+// v1 cannot report how many bytes were actually received, which this
+// variable-length protocol depends on.
+
+bool IRAM_ATTR GeckoSpa::i2c_slave_on_receive_cb(i2c_slave_dev_handle_t handle,
+                                                  const i2c_slave_rx_done_event_data_t *edata,
+                                                  void *user_data) {
+  GeckoSpa *self = static_cast<GeckoSpa *>(user_data);
+  BaseType_t hp_task_woken = pdFALSE;
+
+  // edata->buffer is only valid for the duration of this callback under v2,
+  // so copy out immediately rather than queuing a pointer to it.
+  uint32_t len = edata->length;
+  if (len > sizeof(self->i2c_rx_buf_))
+    len = sizeof(self->i2c_rx_buf_);
+  memcpy(self->i2c_rx_buf_, edata->buffer, len);
+
+  xQueueSendFromISR(self->i2c_rx_queue_, &len, &hp_task_woken);
+  return hp_task_woken == pdTRUE;
+}
+
+bool IRAM_ATTR GeckoSpa::i2c_slave_on_request_cb(i2c_slave_dev_handle_t handle,
+                                                  const i2c_slave_request_event_data_t *edata,
+                                                  void *user_data) {
+  // Fires when the spa tries to read from us and nothing is queued yet -
+  // push the 2-byte ack on demand (mirrors the Arduino bridge's requestEvent(),
+  // which always answered reads with two zero bytes).
+  uint32_t write_len = 0;
+  i2c_slave_write(handle, I2C_ACK_BYTES, sizeof(I2C_ACK_BYTES), &write_len, 0);
+
+  GeckoSpa *self = static_cast<GeckoSpa *>(user_data);
+  self->i2c_ack_sent_count_.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
+
+void GeckoSpa::i2c_slave_install_() {
+  i2c_slave_config_t cfg = {};
+  cfg.i2c_port = I2C_PORT;
+  cfg.sda_io_num = i2c_sda_pin_;
+  cfg.scl_io_num = i2c_scl_pin_;
+  cfg.clk_source = I2C_CLK_SRC_DEFAULT;
+  cfg.send_buf_depth = 256;
+  cfg.receive_buf_depth = 512;  // must comfortably hold the largest single I2C write
+  cfg.slave_addr = i2c_address_;
+  cfg.addr_bit_len = I2C_ADDR_BIT_LEN_7;
+  cfg.flags.enable_internal_pullup = true;
+
+  esp_err_t err = i2c_new_slave_device(&cfg, &i2c_slave_handle_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "i2c_new_slave_device failed: %s", esp_err_to_name(err));
+    i2c_slave_handle_ = nullptr;
+    return;
+  }
+
+  if (i2c_rx_queue_ == nullptr) {
+    i2c_rx_queue_ = xQueueCreate(4, sizeof(uint32_t));
+  }
+
+  i2c_slave_event_callbacks_t cbs = {};
+  cbs.on_receive = i2c_slave_on_receive_cb;
+  cbs.on_request = i2c_slave_on_request_cb;
+  i2c_slave_register_event_callbacks(i2c_slave_handle_, &cbs, this);
+
+  ESP_LOGD(TAG, "I2C slave listening on addr 0x%02X", i2c_address_);
+}
+
+void GeckoSpa::i2c_slave_uninstall_() {
+  if (i2c_slave_handle_ == nullptr)
+    return;
+  i2c_del_slave_device(i2c_slave_handle_);
+  i2c_slave_handle_ = nullptr;
+}
+#endif  // USE_ESP_IDF
 
 uint8_t GeckoSpa::hex_to_byte(char high, char low) {
   auto nibble = [](char c) -> uint8_t {
@@ -870,9 +1072,8 @@ void GeckoSpaClimate::setup() {
 
 climate::ClimateTraits GeckoSpaClimate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supports_current_temperature(true);
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_ACTION);
   traits.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL});
-  traits.set_supports_action(true);
   traits.set_visual_min_temperature(26.0);
   traits.set_visual_max_temperature(40.0);
   traits.set_visual_temperature_step(0.5);
