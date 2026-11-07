@@ -642,23 +642,27 @@ Changes the spa program.
 Sets the target temperature for the spa.
 
 ```
-17 0A 00 00 00 17 09 00 00 00 00 00 07 46 52 51 00 01 02 [TEMP] [CHK]
-                                                         ^^^^   ^^^
-                                                         Raw temp value
+17 0A 00 00 00 17 09 00 00 00 00 00 07 46 52 51 00 01 [TEMP_HI] [TEMP_LO] [CHK]
+                                                      ^^^^^^^^^^^^^^^^^^
+                                                      16-bit big-endian raw temp
 ```
 
 **Temperature Encoding:**
 
+Same format as the temperatures in the status message: a big-endian 16-bit value in 1/18 °C units.
+
 ```
-TEMP_RAW = (temperature_celsius × 18) - 512
+TEMP_RAW = temperature_celsius × 18
 ```
 
-| Temperature | Calculation | Raw Value |
-|-------------|-------------|-----------|
-| 26.0°C | (26 × 18) - 512 = -44 | 0xD4 |
-| 36.5°C | (36.5 × 18) - 512 = 145 | 0x91 |
-| 37.0°C | (37 × 18) - 512 = 154 | 0x9A |
-| 40.0°C | (40 × 18) - 512 = 208 | 0xD0 |
+| Temperature | Calculation | Raw Value | Bytes |
+|-------------|-------------|-----------|-------|
+| 26.0°C | 26 × 18 = 468 | 0x01D4 | `01 D4` |
+| 36.5°C | 36.5 × 18 = 657 | 0x0291 | `02 91` |
+| 37.0°C | 37 × 18 = 666 | 0x029A | `02 9A` |
+| 40.0°C | 40 × 18 = 720 | 0x02D0 | `02 D0` |
+
+> Between 28.5°C and 42.6°C the high byte is always `0x02`, which is why it was earlier mistaken for a constant.
 
 **Example - Set 37°C:**
 ```

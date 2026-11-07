@@ -1,5 +1,6 @@
 #include "gecko_spa.h"
 #include "esphome/core/log.h"
+#include <cmath>
 #include <ctime>
 
 namespace esphome {
@@ -166,14 +167,15 @@ void GeckoSpa::send_program_command(uint8_t prog) {
 void GeckoSpa::send_temperature_command(float temp_c) {
   if (temp_c < 26.0 || temp_c > 40.0)
     return;
-  uint8_t temp_raw = (uint8_t)((temp_c * 18.0) - 512.0);
+  // Setpoint is a big-endian 16-bit value in 1/18 °C units (same as status temps)
+  uint16_t temp_raw = (uint16_t) lroundf(temp_c * 18.0f);
   uint8_t cmd[21] = {
       0x17, 0x0A, 0x00, 0x00, 0x00, 0x17, 0x09, 0x00,
       0x00, 0x00, 0x00, 0x00, 0x07, 0x46, config_version_, status_version_,
-      0x00, 0x01, 0x02, temp_raw, 0x00};
+      0x00, 0x01, (uint8_t) (temp_raw >> 8), (uint8_t) (temp_raw & 0xFF), 0x00};
   cmd[20] = calc_checksum(cmd, 21);
   send_i2c_message(cmd, 21);
-  ESP_LOGI(TAG, "Sent temperature %.1f command (raw=%02X)", temp_c, temp_raw);
+  ESP_LOGI(TAG, "Sent temperature %.1f command (raw=%04X)", temp_c, temp_raw);
 }
 
 void GeckoSpa::request_status() {
@@ -870,9 +872,8 @@ void GeckoSpaClimate::setup() {
 
 climate::ClimateTraits GeckoSpaClimate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supports_current_temperature(true);
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_ACTION);
   traits.set_supported_modes({climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_COOL});
-  traits.set_supports_action(true);
   traits.set_visual_min_temperature(26.0);
   traits.set_visual_max_temperature(40.0);
   traits.set_visual_temperature_step(0.5);
