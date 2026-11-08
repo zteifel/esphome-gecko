@@ -70,9 +70,9 @@ enum class NotifDateFormat : uint8_t {
   D_M_Y = 1
 };
 
-// Last known reminder due dates, persisted to flash
+// Last raw reminder entries from the spa (4 x 6 bytes), persisted to flash
 struct NotificationStore {
-  char dates[4][12];
+  uint8_t entries[24];
 };
 
 class GeckoSpa : public Component, public uart::UARTDevice {
@@ -193,6 +193,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   uint8_t reset_retry_count_{0};        // Number of consecutive resets without recovery
   bool arduino_ready_{false};           // True after Arduino sends READY
   char notification_date_[4][12]{ "", "", "", ""};
+  uint8_t notif_raw_[24]{};
   ESPPreferenceObject notif_pref_;
 
   // Version tracking (parsed from handshake XML filenames)
@@ -226,6 +227,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   bool is_plausible_status(const uint8_t *data, uint16_t len);
   void parse_status_message(const uint8_t *data);
   void parse_notification_message(const uint8_t *data);
+  void decode_notification_entries(const uint8_t *entries);
   void update_climate_state();
 };
 

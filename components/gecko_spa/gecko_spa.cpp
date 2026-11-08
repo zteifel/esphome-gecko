@@ -17,22 +17,14 @@ const uint8_t GeckoSpa::GO_MESSAGE[15] = {
 void GeckoSpa::setup() {
   ESP_LOGI(TAG, "GeckoSpa starting");
 
-  // The spa only sends reminder dates when the notification menu is opened on the keypad,
-  // so restore the last known dates from flash instead of showing "unknown" after a reboot.
-  notif_pref_ = global_preferences->make_preference<NotificationStore>(fnv1_hash("gecko_spa_notifications"));
+  // The spa only sends reminder dates when a reminder is reset, so keep the last raw entries
+  // in flash and decode them again on boot instead of showing "unknown" after a reboot.
+  notif_pref_ = global_preferences->make_preference<NotificationStore>(fnv1_hash("gecko_spa_notif_raw"));
   NotificationStore stored{};
   if (notif_pref_.load(&stored)) {
-    text_sensor::TextSensor *sensors[4] = {rinse_filter_sensor_, clean_filter_sensor_,
-                                           change_water_sensor_, spa_checkup_sensor_};
-    for (int i = 0; i < 4; i++) {
-      stored.dates[i][sizeof(stored.dates[i]) - 1] = '\0';
-      if (stored.dates[i][0] == '\0')
-        continue;
-      strcpy(notification_date_[i], stored.dates[i]);
-      if (sensors[i])
-        sensors[i]->publish_state(notification_date_[i]);
-      ESP_LOGI(TAG, "Restored notification %d due date: %s", i + 1, notification_date_[i]);
-    }
+    memcpy(notif_raw_, stored.entries, sizeof(notif_raw_));
+    ESP_LOGI(TAG, "Restoring reminder dates from flash");
+    decode_notification_entries(notif_raw_);
   }
   if (reset_pin_) {
     reset_pin_->setup();
@@ -816,12 +808,24 @@ void GeckoSpa::update_climate_state() {
 }
 
 void GeckoSpa::parse_notification_message(const uint8_t *data) {
-  // Notification entries start at byte 16, each entry is 6 bytes:
-  // [ID] [YY] [MM] [DD] [INTERVAL_LO] [INTERVAL_HI]  (date order configurable, Y-M-D default)
+  // Notification entries start at byte 16. Persist the raw bytes when they change.
+  const uint8_t *entries = data + 16;
+  if (memcmp(entries, notif_raw_, sizeof(notif_raw_)) != 0) {
+    memcpy(notif_raw_, entries, sizeof(notif_raw_));
+    NotificationStore stored{};
+    memcpy(stored.entries, notif_raw_, sizeof(stored.entries));
+    notif_pref_.save(&stored);
+  }
+  decode_notification_entries(notif_raw_);
+}
+
+void GeckoSpa::decode_notification_entries(const uint8_t *entries) {
+  // 4 entries of 6 bytes: [ID] [YY] [MM] [DD] [INTERVAL_LO] [INTERVAL_HI]
+  // (date order configurable, Y-M-D default)
   // ID: 0x01=Rinse Filter, 0x02=Clean Filter, 0x03=Change Water, 0x04=Spa Checkup
-  bool changed = false;
   for (int i = 0; i < 4; i++) {
-    int offset = 16 + (i * 6);
+    const uint8_t *data = entries;
+    int offset = i * 6;
     uint8_t id = data[offset];
     if (id < 1 || id > 4)
       continue;
@@ -883,14 +887,7 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
         sensor->publish_state(date_str);
       }
       strcpy(notification_date_[id - 1], date_str);
-      changed = true;
     }
-  }
-
-  if (changed) {
-    NotificationStore stored{};
-    memcpy(stored.dates, notification_date_, sizeof(stored.dates));
-    notif_pref_.save(&stored);
   }
 }
 

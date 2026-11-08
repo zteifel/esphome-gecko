@@ -59,7 +59,6 @@ gecko_spa:
   id: spa
   uart_id: arduino_uart
   reset_pin: GPIO14
-  notif_date_format: D-M-Y  # Change to Y-M-D if dates for reminders don't look right
 
 # Climate control
 climate:
