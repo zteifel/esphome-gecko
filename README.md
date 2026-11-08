@@ -722,7 +722,6 @@ TEMP_RAW = temperature_celsius × 18
 ## TODO
 
 - Scheduling of economy intervals and filter cycles in programs (decoding of i2c protocol complete)
-- Optional spa clock sync from Home Assistant (the spa clock drifts, and reminders roll over at the spa's midnight)
 
 
 ## Troubleshooting
