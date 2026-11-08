@@ -59,6 +59,14 @@ gecko_spa:
   id: spa
   uart_id: arduino_uart
   reset_pin: GPIO14
+  serial_proxy_id: arduino_serial  # Lets tools/arduino_ota.py reflash the Arduino over WiFi
+
+# Raw UART access to the Arduino for reflashing (spa protocol pauses while a client is connected)
+serial_proxy:
+  - id: arduino_serial
+    name: "Arduino"
+    port_type: TTL
+    uart_id: arduino_uart
 
 # Climate control
 climate:

@@ -26,3 +26,6 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+
+# Local Arduino firmware backups
+arduino/backup/

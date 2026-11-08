@@ -1,8 +1,16 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+// The spa sends messages up to 78 bytes. The stock AVR Wire library uses 32-byte buffers and
+// silently overflows them, so this project ships a patched copy in lib/Wire.
+static_assert(BUFFER_LENGTH >= 128, "Wire BUFFER_LENGTH too small: use the patched lib/Wire");
+
 #define SPA_ADDRESS 0x17
 #define SERIAL_BAUD 115200
+// Give up on a stuck I2C operation after 25 ms and reset the TWI hardware, instead of
+// waiting forever (the AVR Wire default). Multi-master collisions with the spa can
+// otherwise leave Wire spinning in a while loop, freezing the proxy.
+#define WIRE_TIMEOUT_US 25000
 
 // I2C receive buffer
 volatile uint8_t i2cBuffer[128];
@@ -51,13 +59,18 @@ void sendToI2C(uint8_t* data, uint8_t len) {
     Wire.end();
     Wire.begin();
 
+    Wire.clearWireTimeoutFlag();
     Wire.beginTransmission(SPA_ADDRESS);
     Wire.write(data, len);
-    Wire.endTransmission(false);
+    // 0=ok 1=too long 2=NACK on address 3=NACK on data 4=other (e.g. lost arbitration) 5=timeout
+    uint8_t result = Wire.endTransmission(false);
 
     // Read 2 bytes (spa expects this)
-    Wire.requestFrom((uint8_t)SPA_ADDRESS, (uint8_t)2);
-    while (Wire.available()) Wire.read();
+    if (result == 0) {
+        Wire.requestFrom((uint8_t)SPA_ADDRESS, (uint8_t)2);
+        while (Wire.available()) Wire.read();
+    }
+    bool timedOut = Wire.getWireTimeoutFlag();
 
     // Return to slave mode
     Wire.end();
@@ -65,7 +78,14 @@ void sendToI2C(uint8_t* data, uint8_t len) {
     Wire.onReceive(receiveEvent);
     Wire.onRequest(requestEvent);
 
-    Serial.println("TX:OK");
+    if (timedOut) {
+        Serial.println("TX:ERR:TIMEOUT");
+    } else if (result != 0) {
+        Serial.print("TX:ERR:I2C:");
+        Serial.println(result);
+    } else {
+        Serial.println("TX:OK");
+    }
 }
 
 // Process UART command
@@ -104,8 +124,9 @@ void setup() {
     Serial.begin(SERIAL_BAUD);
     delay(100);
 
-    Serial.println("I2C_PROXY:V1");
+    Serial.println("I2C_PROXY:V2");
 
+    Wire.setWireTimeout(WIRE_TIMEOUT_US, true);
     Wire.begin(SPA_ADDRESS);
     Wire.onReceive(receiveEvent);
     Wire.onRequest(requestEvent);

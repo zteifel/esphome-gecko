@@ -61,44 +61,22 @@ Home Assistant integration for Gecko spa systems using ESP32-S2 and Arduino Nano
 
    **Option B: Build from Source with PlatformIO**
 
-   The Arduino Wire library has a default 32-byte I2C buffer, but the spa sends messages up to 78 bytes. You **must** patch the Wire library to increase this buffer.
+   The stock Arduino Wire library uses 32-byte buffers, but the spa sends messages up to 78 bytes.
+   This project ships a patched copy in `arduino/lib/Wire` with 128-byte buffers, so no manual
+   patching is needed (the build fails with a clear error if the buffers are too small).
 
-   1. Install PlatformIO:
-      ```bash
-      pip install platformio
-      ```
+   ```bash
+   pip install platformio
+   cd arduino
+   pio run -t upload
+   ```
 
-   2. Initialize the project to download dependencies:
-      ```bash
-      cd arduino
-      pio run
-      ```
+   > **Note:** Older versions of these instructions only patched `twi.h`. That is not enough:
+   > `Wire.h` hard-codes `BUFFER_LENGTH 32`, so 78-byte messages overflowed `TwoWire::rxBuffer`
+   > and corrupted the memory after it. The precompiled hex was always built correctly.
 
-   3. **Patch the Wire library** - Edit the twi.h file to increase the buffer size:
-      ```bash
-      # Find your PlatformIO packages directory (usually ~/.platformio/packages/)
-      # Edit the twi.h file:
-      nano ~/.platformio/packages/framework-arduino-avr/libraries/Wire/src/utility/twi.h
-      ```
-
-      Find the line:
-      ```c
-      #ifndef TWI_BUFFER_LENGTH
-      #define TWI_BUFFER_LENGTH 32
-      ```
-
-      Change `32` to `128`:
-      ```c
-      #ifndef TWI_BUFFER_LENGTH
-      #define TWI_BUFFER_LENGTH 128
-      ```
-
-   4. Build and upload:
-      ```bash
-      pio run -t upload
-      ```
-
-   > **Why is patching needed?** The `-DTWI_BUFFER_LENGTH=128` build flag in `platformio.ini` should override this value, but some PlatformIO versions don't apply it correctly. Patching the source file directly ensures the buffer is always 128 bytes.
+   Once installed, later Arduino updates can be done over WiFi, see
+   [Updating the Arduino over WiFi](#updating-the-arduino-over-wifi).
 
 3. **Create a secrets.yaml file** with your credentials:
    ```yaml
@@ -245,6 +223,43 @@ text_sensor:
 
 6. The device will appear in Home Assistant under **Settings → Devices & Services → ESPHome**
 
+### Updating the Arduino over WiFi
+
+The ESP32 can pass its UART through to the Arduino, so the Arduino can be reflashed without
+opening the spa. Add a `serial_proxy` on the Arduino UART and link it to `gecko_spa`:
+
+```yaml
+gecko_spa:
+  id: spa
+  uart_id: arduino_uart
+  reset_pin: GPIO17
+  serial_proxy_id: arduino_serial
+
+serial_proxy:
+  - id: arduino_serial
+    name: "Arduino"
+    port_type: TTL
+    uart_id: arduino_uart
+```
+
+While a client is connected to the proxy, `gecko_spa` pauses the spa protocol and resets the
+Arduino into its bootloader. `tools/arduino_ota.py` bridges the proxy to avrdude
+(needs `pip install aioesphomeapi pyyaml` and avrdude; PlatformIO's copy is found automatically):
+
+```bash
+# Read-only test, also backs up the current firmware
+python3 tools/arduino_ota.py --host <esp-ip> --secrets esphome/secrets.yaml --baud 57600 \
+  -- -U flash:r:backup.hex:i
+
+# Flash
+python3 tools/arduino_ota.py --host <esp-ip> --secrets esphome/secrets.yaml --baud 57600 \
+  -- -U flash:w:arduino/arduino-i2c-proxy-atmega328p.hex:i
+```
+
+Use `--baud 57600` for the old Nano bootloader and `--baud 115200` for the new (Optiboot) one.
+If sync fails at one speed, try the other. The bootloader is never overwritten, so a failed
+flash can simply be retried the same way.
+
 ### Home Assistant Entities
 
 After installation, you'll have these entities:
@@ -265,6 +280,7 @@ After installation, you'll have these entities:
 | Spa Checkup Due | Text Sensor | Due date for spa checkup (YYYY-MM-DD) |
 | Refresh Spa Status | Button | Manually request status update |
 | Reset Arduino | Button | Reset the Arduino I2C proxy remotely |
+| Spa Arduino Freezes | Sensor | Times the Arduino stopped answering and was reset (since ESP boot) |
 
 ---
 
@@ -383,10 +399,12 @@ TX:170A0000001709000000000646525101330163\n
 
 | Message | Description |
 |---------|-------------|
-| `I2C_PROXY:V1\n` | Firmware version on boot |
+| `I2C_PROXY:V2\n` | Firmware version on boot |
 | `READY\n` | Arduino ready for commands |
 | `RX:<len>:<hex>\n` | Received I2C message (length in decimal, data in hex) |
 | `TX:OK\n` | I2C transmission acknowledged |
+| `TX:ERR:I2C:<code>\n` | I2C transmission failed (V2+). Code from `endTransmission()`: 2=address NACK, 3=data NACK, 4=other (e.g. lost arbitration) |
+| `TX:ERR:TIMEOUT\n` | I2C operation timed out after 25 ms and the TWI hardware was reset (V2+) |
 | `TX:ERR:INVALID_HEX\n` | Invalid hex string |
 | `TX:ERR:TOO_LONG\n` | Message exceeds 128 bytes |
 | `PONG\n` | Response to PING |
@@ -681,8 +699,8 @@ TEMP_RAW = temperature_celsius × 18
 
 ### Arduino Hangs After Receiving I2C
 
-- **Most common cause:** I2C buffer too small. The Wire library defaults to 32 bytes, but spa messages are up to 78 bytes. See [Flash the Arduino Nano](#quick-start) for patching instructions or use the precompiled binary.
-- Verify the patch was applied: after patching `twi.h`, the line should read `#define TWI_BUFFER_LENGTH 128`
+- **Most common cause:** I2C buffer too small. The stock Wire library uses 32 bytes, but spa messages are up to 78 bytes. Use the precompiled binary or build with the bundled `arduino/lib/Wire`.
+- **Freezes under traffic:** firmware V1 could hang forever inside Wire when an I2C send collided with spa traffic (the AVR Wire timeout is off by default). V2 enables a 25 ms timeout and reports `TX:ERR` instead. The ESP32 also resets an Arduino that doesn't answer a send within 1 s, and counts these in the *Spa Arduino Freezes* sensor.
 - Do NOT use `digitalRead()` on SDA/SCL pins
 - Do NOT use hardware watchdog
 
