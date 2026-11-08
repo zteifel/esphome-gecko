@@ -87,6 +87,8 @@ void GeckoSpa::loop() {
         process_proxy_message(uart_buffer_);
         uart_pos_ = 0;
       }
+    } else if (c < 0x20 || c > 0x7E) {
+      // Skip glitch bytes (e.g. 0x00 while the Arduino resets) so they don't corrupt the line
     } else if (uart_pos_ < sizeof(uart_buffer_) - 1) {
       uart_buffer_[uart_pos_++] = c;
     }
