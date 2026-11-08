@@ -273,7 +273,7 @@ After installation, you'll have these entities:
 | Spa Program | Select | Choose program (Away, Standard, Energy, Super Energy, Weekend) |
 | Spa Standby | Binary Sensor | Standby mode status |
 | Spa Connected | Binary Sensor | Connection status to spa |
-| Spa Time | Text Sensor | Spa's internal clock (DD/MM HH:MM:SS) |
+| Spa Time | Text Sensor | Spa's internal clock (YYYY-MM-DD HH:MM:SS, or HH:MM:SS if the pack sends no date) |
 | Spa Rinse Filter Due | Text Sensor | Due date for filter rinse (YYYY-MM-DD) |
 | Spa Clean Filter Due | Text Sensor | Due date for filter clean (YYYY-MM-DD) |
 | Spa Change Water Due | Text Sensor | Due date for water change (YYYY-MM-DD) |
@@ -476,13 +476,15 @@ After GO is sent, the spa responds with messages that must be acknowledged:
 3. **Spa sends another 33-byte config message**
 4. **Controller replies with ACK**
 5. **Spa sends 22-byte clock message** (byte[13] = 0x4B = 'K', contains date/time)
-   - Byte 15: Day (decimal)
-   - Byte 16: Month (decimal)
+   - Byte 14: Year (from 2000, e.g. 0x1A = 2026)
+   - Byte 15: Month
+   - Byte 16: Day
    - Byte 17: Day of week (0=Sun)
    - Byte 18: Hour (hex, 24h format)
    - Byte 19: Minutes (hex)
    - Byte 20: Seconds (hex)
    - Byte 21: Checksum
+   - Example: `… 4B 1A 0B 08 00 0F 11 19 5F` = 2026-11-08, Sunday, 15:17:25. Some packs send `FF` for the date bytes.
 6. **Controller replies with ACK**
 7. **Spa sends 15-byte "LO" message**: bytes[13-14] = 0x4C 0x4F = "LO"
 8. **Handshake complete** - status messages now flow normally
@@ -576,22 +578,27 @@ Indicates current program selection.
 
 #### Notification Message (77 bytes)
 
-Maintenance reminder data, sent with byte[6] = 0x0B.
+Maintenance reminder data, sent with byte[6] = 0x0B. The spa sends it when a reminder is
+**reset** (on the keypad, or by the spa itself), not when the menu is only viewed, so the
+component stores the last values in flash and restores them after a reboot.
 
 **Entry Format (6 bytes each, starting at byte 16):**
 
 ```
-[ID] [DD] [MM] [YY] [INTERVAL_LO] [INTERVAL_HI]
+[ID] [YY] [MM] [DD] [INTERVAL_LO] [INTERVAL_HI]
 ```
 
 | Byte | Description |
 |------|-------------|
 | ID | Notification type (see below) |
-| DD | Reset day (decimal, 1-31) |
-| MM | Reset month (decimal, 1-12) |
-| YY | Reset year (2-digit, e.g., 25 for 2025) |
+| YY | Reset year (from 2000, e.g. 0x1A = 2026) |
+| MM | Reset month (1-12) |
+| DD | Reset day (1-31) |
 | INTERVAL_LO | Interval low byte |
 | INTERVAL_HI | Interval high byte |
+
+The date is year-month-day, the same order as the clock message. If your dates look wrong,
+`notif_date_format: D-M-Y` on `gecko_spa` switches back to the old interpretation.
 
 **Notification IDs:**
 
@@ -606,7 +613,7 @@ Maintenance reminder data, sent with byte[6] = 0x0B.
 
 **Due Date Calculation:** `due_date = reset_date + interval_days`
 
-**Example:** Entry `01 09 12 25 1E 00` = Rinse Filter, reset Dec 9 2025, interval 30 days → due Jan 8 2026
+**Example:** Entry `01 1A 0B 08 1E 00` = Rinse Filter, reset 2026-11-08, interval 30 days → due 2026-12-08
 
 ---
 
@@ -692,7 +699,7 @@ TEMP_RAW = temperature_celsius × 18
 ## TODO
 
 - Scheduling of economy intervals and filter cycles in programs (decoding of i2c protocol complete)
-- Cleanup notifications fix
+- Optional spa clock sync from Home Assistant (the spa clock drifts, and reminders roll over at the spa's midnight)
 
 
 ## Troubleshooting
