@@ -501,15 +501,16 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
                customer_id, num_zones,
                silent_mode < 5 ? silent_str[silent_mode] : "?");
 
-      // Reuse the status parser on the status portion, if we know what the length of the
-      // status message should be.
-      if (status_msg_len_ != 0) {
-        // Status portion is the very end of the message
-        int STATUS_OFFSET = msg_buffer_len_ - status_msg_len_;
-        // Check for some expected byte markers
-        if ((msg_buffer_[STATUS_OFFSET - 1] == 0x3B) &&
-            (msg_buffer_[STATUS_OFFSET + 1] == 0)) {
-          parse_status_message(&msg_buffer_[STATUS_OFFSET]);
+      // The status block is the tail of this message. When the spa is idle it may only send
+      // these combined messages, so don't wait for a standalone status to learn the length:
+      // fall back to the inYT layout (228 config + 162 status bytes) until one arrives.
+      uint16_t tail_len = status_msg_len_ != 0 ? status_msg_len_ : DEFAULT_EMBEDDED_STATUS_LEN;
+      if (msg_buffer_len_ > tail_len) {
+        const uint8_t *status = &msg_buffer_[msg_buffer_len_ - tail_len];
+        if (is_plausible_status(status, tail_len)) {
+          parse_status_message(status);
+        } else {
+          ESP_LOGD(TAG, "Embedded status (%d bytes) rejected: [1]=%02X", tail_len, status[1]);
         }
       }
     }
@@ -528,6 +529,16 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
     }
     ESP_LOGI(TAG, "Short msg (%d bytes): %s", len, hex_str);
   }
+}
+
+bool GeckoSpa::is_plausible_status(const uint8_t *data, uint16_t len) {
+  // Validate alignment with the setpoint rather than a single marker byte, which differs
+  // between packs. The setpoint must decode to a sane temperature (8-42 C).
+  uint16_t pos = log_offsets_->realSetPointG - 254;
+  if (len < MIN_STATUS_MSG_LEN || pos + 1 >= len || data[1] != 0x00)
+    return false;
+  uint16_t setpoint_raw = (data[pos] << 8) | data[pos + 1];
+  return setpoint_raw >= 8 * 18 && setpoint_raw <= 42 * 18;
 }
 
 void GeckoSpa::parse_status_message(const uint8_t *data) {

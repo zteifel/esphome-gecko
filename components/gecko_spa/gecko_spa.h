@@ -208,12 +208,15 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   // Currently we don't parse beyond offset 112, so a min length of 120 is safe.
   uint16_t status_msg_len_{0};
   static const uint16_t MIN_STATUS_MSG_LEN{120};
+  // Status tail length in combined config+status messages, used until a standalone status is seen
+  static const uint16_t DEFAULT_EMBEDDED_STATUS_LEN{162};
 
   uint8_t calc_checksum(const uint8_t *data, uint8_t len);
   void send_i2c_message(const uint8_t *data, uint8_t len);
   uint8_t hex_to_byte(char high, char low);
   void process_proxy_message(const char *msg);
   void process_i2c_message(const uint8_t *data, uint8_t len);
+  bool is_plausible_status(const uint8_t *data, uint16_t len);
   void parse_status_message(const uint8_t *data);
   void parse_notification_message(const uint8_t *data);
   int days_since_2000(int day, int month, int year);
