@@ -26,6 +26,8 @@ void GeckoSpa::setup() {
     ESP_LOGI(TAG, "Restoring reminder dates from flash");
     decode_notification_entries(notif_raw_);
   }
+  if (arduino_freezes_sensor_)
+    arduino_freezes_sensor_->publish_state(0);
   if (reset_pin_) {
     reset_pin_->setup();
     reset_pin_->digital_write(true);  // RST is active LOW, keep HIGH
@@ -40,6 +42,40 @@ void GeckoSpa::loop() {
     }
     reset_in_progress_ = false;
     ESP_LOGI(TAG, "Arduino reset complete");
+  }
+
+#ifdef USE_SERIAL_PROXY
+  // While a serial proxy client (e.g. avrdude via the bridge script) is connected, the UART
+  // belongs to it: stay off the line, and reset the Arduino so its bootloader starts listening.
+  bool proxy_active = serial_proxy_ != nullptr && serial_proxy_->get_api_connection() != nullptr;
+  if (proxy_active != programming_mode_) {
+    programming_mode_ = proxy_active;
+    tx_pending_ = 0;
+    uart_pos_ = 0;
+    msg_buffer_len_ = 0;
+    reset_retry_count_ = 0;
+    if (programming_mode_) {
+      ESP_LOGW(TAG, "Serial proxy client connected: spa protocol paused, resetting Arduino into bootloader");
+    } else {
+      ESP_LOGW(TAG, "Serial proxy client disconnected: resuming spa protocol");
+      last_i2c_time_ = millis();
+    }
+    reset_arduino();
+  }
+  if (programming_mode_)
+    return;
+#endif
+
+  // Arduino freeze detection: every TX must be answered with TX:OK (or TX:ERR) within a second
+  if (tx_pending_ > 0 && !reset_in_progress_ && millis() - tx_pending_since_ > TX_ACK_TIMEOUT_MS) {
+    arduino_freeze_count_++;
+    ESP_LOGW(TAG, "Arduino froze: no TX:OK %ums after sending TX:%s (freeze #%u)",
+             (unsigned) (millis() - tx_pending_since_), last_tx_hex_, (unsigned) arduino_freeze_count_);
+    if (arduino_freezes_sensor_)
+      arduino_freezes_sensor_->publish_state(arduino_freeze_count_);
+    tx_pending_ = 0;
+    reset_retry_count_ = 0;
+    reset_arduino();
   }
 
   // Read UART lines from Arduino proxy
@@ -218,6 +254,10 @@ uint8_t GeckoSpa::calc_checksum(const uint8_t *data, uint8_t len) {
 }
 
 void GeckoSpa::send_i2c_message(const uint8_t *data, uint8_t len) {
+#ifdef USE_SERIAL_PROXY
+  if (programming_mode_)
+    return;
+#endif
   write_str("TX:");
   for (uint8_t i = 0; i < len; i++) {
     char hex[3];
@@ -225,6 +265,23 @@ void GeckoSpa::send_i2c_message(const uint8_t *data, uint8_t len) {
     write_str(hex);
   }
   write_str("\n");
+
+  // Track the acknowledgment, except while the Arduino is resetting/booting (it can't answer)
+  if (reset_in_progress_ || millis() - reset_start_time_ < 3000)
+    return;
+  if (tx_pending_ == 0)
+    tx_pending_since_ = millis();
+  tx_pending_++;
+  int pos = 0;
+  for (uint8_t i = 0; i < len && pos + 2 < (int) sizeof(last_tx_hex_); i++)
+    pos += snprintf(last_tx_hex_ + pos, sizeof(last_tx_hex_) - pos, "%02X", data[i]);
+}
+
+void GeckoSpa::ack_tx_() {
+  if (tx_pending_ > 0) {
+    tx_pending_--;
+    tx_pending_since_ = millis();
+  }
 }
 
 uint8_t GeckoSpa::hex_to_byte(char high, char low) {
@@ -264,10 +321,16 @@ void GeckoSpa::process_proxy_message(const char *msg) {
   } else if (strcmp(msg, "READY") == 0) {
     ESP_LOGI(TAG, "Arduino proxy ready");
     arduino_ready_ = true;
-  } else if (strcmp(msg, "I2C_PROXY:V1") == 0) {
-    ESP_LOGI(TAG, "Arduino proxy version 1");
+    tx_pending_ = 0;
+  } else if (strncmp(msg, "I2C_PROXY:", 10) == 0) {
+    ESP_LOGI(TAG, "Arduino proxy firmware %s", msg + 10);
   } else if (strcmp(msg, "TX:OK") == 0) {
     ESP_LOGD(TAG, "I2C TX acknowledged");
+    ack_tx_();
+  } else if (strncmp(msg, "TX:ERR", 6) == 0) {
+    // V2 proxy firmware reports I2C failures, e.g. TX:ERR:I2C:4 or TX:ERR:TIMEOUT
+    ESP_LOGW(TAG, "Arduino reported %s for TX:%s", msg, last_tx_hex_);
+    ack_tx_();
   } else if (strcmp(msg, "PONG") == 0) {
     ESP_LOGD(TAG, "Proxy ping OK");
   }

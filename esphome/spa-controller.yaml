@@ -51,6 +51,14 @@ gecko_spa:
   id: spa
   uart_id: arduino_uart
   reset_pin: GPIO17  # Resets Arduino automatically on disconnect
+  serial_proxy_id: arduino_serial  # Lets tools/arduino_ota.py reflash the Arduino over WiFi
+
+# Raw UART access to the Arduino for reflashing (spa protocol pauses while a client is connected)
+serial_proxy:
+  - id: arduino_serial
+    name: "Arduino"
+    port_type: TTL
+    uart_id: arduino_uart
 
 # Climate control
 climate:
@@ -198,6 +206,12 @@ sensor:
     gecko_spa_id: spa
     type: pump_timer
     name: "Spa Pump Timer"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: arduino_freezes
+    name: "Spa Arduino Freezes"
+    entity_category: diagnostic
 
   - platform: template
     name: "Spa Rinse Filter Days"

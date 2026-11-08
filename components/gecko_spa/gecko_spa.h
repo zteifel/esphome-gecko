@@ -13,6 +13,9 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/sensor/sensor.h"
+#ifdef USE_SERIAL_PROXY
+#include "esphome/components/serial_proxy/serial_proxy.h"
+#endif
 
 namespace esphome {
 namespace gecko_spa {
@@ -111,6 +114,10 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void set_lock_mode_sensor(text_sensor::TextSensor *s) { lock_mode_sensor_ = s; }
   void set_pack_type_sensor(text_sensor::TextSensor *s) { pack_type_sensor_ = s; }
   void set_pump_timer_sensor(sensor::Sensor *s) { pump_timer_sensor_ = s; }
+  void set_arduino_freezes_sensor(sensor::Sensor *s) { arduino_freezes_sensor_ = s; }
+#ifdef USE_SERIAL_PROXY
+  void set_serial_proxy(serial_proxy::SerialProxy *proxy) { serial_proxy_ = proxy; }
+#endif
   void set_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
   void set_notif_date_format(NotifDateFormat format) { notif_date_format_ = format; }
 
@@ -163,6 +170,19 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   text_sensor::TextSensor *lock_mode_sensor_{nullptr};
   text_sensor::TextSensor *pack_type_sensor_{nullptr};
   sensor::Sensor *pump_timer_sensor_{nullptr};
+  sensor::Sensor *arduino_freezes_sensor_{nullptr};
+#ifdef USE_SERIAL_PROXY
+  serial_proxy::SerialProxy *serial_proxy_{nullptr};
+  bool programming_mode_{false};
+#endif
+
+  // Arduino freeze detection
+  static const uint32_t TX_ACK_TIMEOUT_MS{1000};
+  uint8_t tx_pending_{0};          // TX lines sent but not yet answered with TX:OK/TX:ERR
+  uint32_t tx_pending_since_{0};
+  uint32_t arduino_freeze_count_{0};
+  char last_tx_hex_[65]{};
+  void ack_tx_();
   GPIOPin *reset_pin_{nullptr};
   NotifDateFormat notif_date_format_{NotifDateFormat::Y_M_D};
 
