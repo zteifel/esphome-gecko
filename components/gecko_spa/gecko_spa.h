@@ -16,6 +16,9 @@
 #ifdef USE_SERIAL_PROXY
 #include "esphome/components/serial_proxy/serial_proxy.h"
 #endif
+#ifdef USE_TIME
+#include "esphome/components/time/real_time_clock.h"
+#endif
 
 namespace esphome {
 namespace gecko_spa {
@@ -132,6 +135,12 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   void send_temperature_command(float temp_c);
   void request_status();
   void reset_arduino();
+  // Set the spa clock from the time component (sent after the next handshake)
+  void sync_clock();
+#ifdef USE_TIME
+  void set_time(time::RealTimeClock *t) { time_ = t; }
+#endif
+  void set_clock_sync(bool enabled) { clock_sync_ = enabled; }
 
   // State getters
   bool get_light_state() { return light_state_; }
@@ -175,6 +184,21 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   serial_proxy::SerialProxy *serial_proxy_{nullptr};
   bool programming_mode_{false};
 #endif
+
+  // Spa clock sync
+#ifdef USE_TIME
+  time::RealTimeClock *time_{nullptr};
+#endif
+  bool clock_sync_{false};          // Automatically sync when the spa clock drifts
+  bool clock_sync_pending_{false};
+  uint32_t last_clock_sync_{0};
+  uint32_t clock_sync_due_{0};
+  static const uint32_t CLOCK_SYNC_DELAY_MS{10000};  // After the handshake, when the bus is quiet
+  static const long CLOCK_SYNC_THRESHOLD_S{120};
+  static const uint32_t CLOCK_SYNC_MIN_INTERVAL_MS{3600000};  // At most one automatic sync per hour
+  void send_clock_now_();
+  void check_clock_drift_(bool date_valid, uint8_t year, uint8_t month, uint8_t day, uint8_t hour,
+                          uint8_t minute, uint8_t second);
 
   // Arduino freeze detection
   static const uint32_t TX_ACK_TIMEOUT_MS{1000};

@@ -260,6 +260,28 @@ Use `--baud 57600` for the old Nano bootloader and `--baud 115200` for the new (
 If sync fails at one speed, try the other. The bootloader is never overwritten, so a failed
 flash can simply be retried the same way.
 
+### Spa Clock Sync
+
+The spa clock drifts (and reminders roll over at the spa's midnight). The component can set it
+from an ESPHome `time` source, either from the *Sync Spa Clock* button or automatically when it
+is more than 2 minutes off (at most once per hour):
+
+```yaml
+time:
+  - platform: homeassistant
+    id: ha_time
+
+gecko_spa:
+  id: spa
+  uart_id: arduino_uart
+  time_id: ha_time
+  clock_sync: true  # optional, default false
+```
+
+The command uses the same layout as the spa's clock message (year, month, day, weekday, hour,
+minute, second). The spa replies `… 01 00 03`. Automatic syncs are sent 10 s after a GO
+handshake: a clock command sent immediately after the handshake is acknowledged but ignored.
+
 ### Home Assistant Entities
 
 After installation, you'll have these entities:
@@ -279,6 +301,7 @@ After installation, you'll have these entities:
 | Spa Change Water Due | Text Sensor | Due date for water change (YYYY-MM-DD) |
 | Spa Checkup Due | Text Sensor | Due date for spa checkup (YYYY-MM-DD) |
 | Refresh Spa Status | Button | Manually request status update |
+| Sync Spa Clock | Button | Set the spa clock from Home Assistant time (needs `time_id`) |
 | Reset Arduino | Button | Reset the Arduino I2C proxy remotely |
 | Spa Arduino Freezes | Sensor | Times the Arduino stopped answering and was reset (since ESP boot) |
 

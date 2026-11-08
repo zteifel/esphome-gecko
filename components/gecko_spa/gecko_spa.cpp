@@ -66,6 +66,12 @@ void GeckoSpa::loop() {
     return;
 #endif
 
+  if (clock_sync_pending_ && clock_sync_due_ != 0 && (int32_t) (millis() - clock_sync_due_) >= 0) {
+    clock_sync_pending_ = false;
+    clock_sync_due_ = 0;
+    send_clock_now_();
+  }
+
   // Arduino freeze detection: every TX must be answered with TX:OK (or TX:ERR) within a second
   if (tx_pending_ > 0 && !reset_in_progress_ && millis() - tx_pending_since_ > TX_ACK_TIMEOUT_MS) {
     arduino_freeze_count_++;
@@ -279,6 +285,84 @@ void GeckoSpa::send_i2c_message(const uint8_t *data, uint8_t len) {
     pos += snprintf(last_tx_hex_ + pos, sizeof(last_tx_hex_) - pos, "%02X", data[i]);
 }
 
+void GeckoSpa::sync_clock() {
+#ifdef USE_TIME
+  if (time_ == nullptr) {
+    ESP_LOGW(TAG, "Clock sync needs time_id");
+    return;
+  }
+  ESP_LOGI(TAG, "Spa clock sync requested");
+  send_clock_now_();
+#else
+  ESP_LOGW(TAG, "Clock sync needs a time component (time_id)");
+#endif
+}
+
+void GeckoSpa::send_clock_now_() {
+#ifdef USE_TIME
+  ESPTime now = time_->now();
+  if (!now.is_valid()) {
+    ESP_LOGW(TAG, "Clock sync skipped: local time not valid yet");
+    return;
+  }
+  // Same layout as the spa's own clock message:
+  // [14]=Year (from 2000) [15]=Month [16]=Day [17]=DayOfWeek (0=Sun) [18]=Hour [19]=Min [20]=Sec
+  uint8_t cmd[22] = {
+      0x17, 0x0A, 0x00, 0x00, 0x00, 0x17, 0x09, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x08, 0x4B,
+      (uint8_t) (now.year - 2000), now.month, now.day_of_month,
+      (uint8_t) (now.day_of_week - 1),  // ESPTime: Sunday=1
+      now.hour, now.minute, now.second, 0x00};
+  cmd[21] = calc_checksum(cmd, 22);
+  send_i2c_message(cmd, 22);
+  last_clock_sync_ = millis();
+  ESP_LOGI(TAG, "Sent spa clock: %04d-%02d-%02d %02d:%02d:%02d (weekday %d)", now.year, now.month,
+           now.day_of_month, now.hour, now.minute, now.second, cmd[17]);
+#endif
+}
+
+void GeckoSpa::check_clock_drift_(bool date_valid, uint8_t year, uint8_t month, uint8_t day, uint8_t hour,
+                                  uint8_t minute, uint8_t second) {
+#ifdef USE_TIME
+  if (time_ == nullptr || clock_sync_pending_)
+    return;
+  ESPTime now = time_->now();
+  if (!now.is_valid())
+    return;
+  // Compare as naive local times (both clocks are local time)
+  struct tm spa_tm = {};
+  spa_tm.tm_year = date_valid ? 100 + year : now.year - 1900;
+  spa_tm.tm_mon = date_valid ? month - 1 : now.month - 1;
+  spa_tm.tm_mday = date_valid ? day : now.day_of_month;
+  spa_tm.tm_hour = hour;
+  spa_tm.tm_min = minute;
+  spa_tm.tm_sec = second;
+  struct tm local_tm = {};
+  local_tm.tm_year = now.year - 1900;
+  local_tm.tm_mon = now.month - 1;
+  local_tm.tm_mday = now.day_of_month;
+  local_tm.tm_hour = now.hour;
+  local_tm.tm_min = now.minute;
+  local_tm.tm_sec = now.second;
+  long drift = (long) difftime(mktime(&spa_tm), mktime(&local_tm));
+  if (!date_valid) {
+    // Time of day only: take the shortest way around midnight
+    drift %= 86400;
+    if (drift > 43200)
+      drift -= 86400;
+    if (drift < -43200)
+      drift += 86400;
+  }
+  ESP_LOGD(TAG, "Spa clock drift: %lds", drift);
+  if (!clock_sync_ || labs(drift) <= CLOCK_SYNC_THRESHOLD_S)
+    return;
+  if (last_clock_sync_ != 0 && millis() - last_clock_sync_ < CLOCK_SYNC_MIN_INTERVAL_MS)
+    return;
+  ESP_LOGI(TAG, "Spa clock is off by %lds, syncing", drift);
+  clock_sync_pending_ = true;
+#endif
+}
+
 void GeckoSpa::ack_tx_() {
   if (tx_pending_ > 0) {
     tx_pending_--;
@@ -450,12 +534,23 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
       spa_time_sensor_->publish_state(time_str);
 
     send_i2c_message(ACK_MESSAGE, 15);
+    check_clock_drift_(date_valid, year, month, day, hour, minute, second);
     return;
   }
 
   // 15-byte "LO" message - handshake complete
   if (len == 15 && data[13] == 0x4C && data[14] == 0x4F) {
     ESP_LOGI(TAG, "Received LO message - handshake complete");
+    // A clock command sent right after the handshake is acknowledged but ignored (the spa is
+    // busy sending status then); one sent ~10 s later takes effect. Schedule it for then.
+    if (clock_sync_pending_)
+      clock_sync_due_ = millis() + CLOCK_SYNC_DELAY_MS;
+    return;
+  }
+
+  // 15-byte reply from 0x0B, sent right after a clock command (00 03 even when it takes effect)
+  if (len == 15 && data[6] == 0x0B) {
+    ESP_LOGD(TAG, "Clock command reply: %02X %02X", data[13], data[14]);
     return;
   }
 

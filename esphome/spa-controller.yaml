@@ -52,6 +52,8 @@ gecko_spa:
   uart_id: arduino_uart
   reset_pin: GPIO17  # Resets Arduino automatically on disconnect
   serial_proxy_id: arduino_serial  # Lets tools/arduino_ota.py reflash the Arduino over WiFi
+  time_id: ha_time   # Used by the "Sync Spa Clock" button
+  clock_sync: true  # Sync automatically when the spa clock drifts > 2 min
 
 # Raw UART access to the Arduino for reflashing (spa protocol pauses while a client is connected)
 serial_proxy:
@@ -290,6 +292,13 @@ button:
     on_press:
       - lambda: |-
           id(spa).request_status();
+
+  - platform: template
+    name: "Sync Spa Clock"
+    icon: "mdi:clock-check-outline"
+    on_press:
+      - lambda: |-
+          id(spa).sync_clock();
 
   - platform: template
     name: "Reset Arduino"
