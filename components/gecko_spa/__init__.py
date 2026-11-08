@@ -25,7 +25,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(): cv.declare_id(GeckoSpa),
         cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
         cv.Optional(CONF_RESET_PIN): pins.gpio_output_pin_schema,
-        cv.Optional(CONF_NOTIF_DATE_FORMAT, default="D-M-Y"): cv.enum(NOTIF_DATE_FORMATS, upper=True),
+        cv.Optional(CONF_NOTIF_DATE_FORMAT, default="Y-M-D"): cv.enum(NOTIF_DATE_FORMATS, upper=True),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 

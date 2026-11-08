@@ -5,6 +5,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/preferences.h"
+#include "esphome/core/helpers.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/switch/switch.h"
@@ -67,6 +68,11 @@ class GeckoSpaClimate;
 enum class NotifDateFormat : uint8_t {
   Y_M_D = 0,
   D_M_Y = 1
+};
+
+// Last known reminder due dates, persisted to flash
+struct NotificationStore {
+  char dates[4][12];
 };
 
 class GeckoSpa : public Component, public uart::UARTDevice {
@@ -158,7 +164,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   text_sensor::TextSensor *pack_type_sensor_{nullptr};
   sensor::Sensor *pump_timer_sensor_{nullptr};
   GPIOPin *reset_pin_{nullptr};
-  NotifDateFormat notif_date_format_{NotifDateFormat::D_M_Y};
+  NotifDateFormat notif_date_format_{NotifDateFormat::Y_M_D};
 
   // State
   bool light_state_{false};
@@ -187,6 +193,7 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   uint8_t reset_retry_count_{0};        // Number of consecutive resets without recovery
   bool arduino_ready_{false};           // True after Arduino sends READY
   char notification_date_[4][12]{ "", "", "", ""};
+  ESPPreferenceObject notif_pref_;
 
   // Version tracking (parsed from handshake XML filenames)
   uint8_t config_version_{0};   // e.g., 82 from inYT_C82.xml
@@ -219,7 +226,6 @@ class GeckoSpa : public Component, public uart::UARTDevice {
   bool is_plausible_status(const uint8_t *data, uint16_t len);
   void parse_status_message(const uint8_t *data);
   void parse_notification_message(const uint8_t *data);
-  int days_since_2000(int day, int month, int year);
   void update_climate_state();
 };
 

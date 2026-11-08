@@ -16,6 +16,24 @@ const uint8_t GeckoSpa::GO_MESSAGE[15] = {
 
 void GeckoSpa::setup() {
   ESP_LOGI(TAG, "GeckoSpa starting");
+
+  // The spa only sends reminder dates when the notification menu is opened on the keypad,
+  // so restore the last known dates from flash instead of showing "unknown" after a reboot.
+  notif_pref_ = global_preferences->make_preference<NotificationStore>(fnv1_hash("gecko_spa_notifications"));
+  NotificationStore stored{};
+  if (notif_pref_.load(&stored)) {
+    text_sensor::TextSensor *sensors[4] = {rinse_filter_sensor_, clean_filter_sensor_,
+                                           change_water_sensor_, spa_checkup_sensor_};
+    for (int i = 0; i < 4; i++) {
+      stored.dates[i][sizeof(stored.dates[i]) - 1] = '\0';
+      if (stored.dates[i][0] == '\0')
+        continue;
+      strcpy(notification_date_[i], stored.dates[i]);
+      if (sensors[i])
+        sensors[i]->publish_state(notification_date_[i]);
+      ESP_LOGI(TAG, "Restored notification %d due date: %s", i + 1, notification_date_[i]);
+    }
+  }
   if (reset_pin_) {
     reset_pin_->setup();
     reset_pin_->digital_write(true);  // RST is active LOW, keep HIGH
@@ -350,22 +368,29 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
     return;
   }
 
-  // 22-byte clock message - parse time and send acknowledgment
+  // 22-byte clock message - parse date/time and send acknowledgment
   if (len == 22 && data[13] == 0x4B) {  // 0x4B = 'K'
-    // Time format: [15]=Day [16]=Month [17]=DayOfWeek [18]=Hour [19]=Min [20]=Sec
-    uint8_t day = data[15];
-    uint8_t month = data[16];
+    // [14]=Year (from 2000) [15]=Month [16]=Day [17]=DayOfWeek (0=Sun) [18]=Hour [19]=Min [20]=Sec
+    // Same Y-M-D order as the reminder dates. Some packs send 0xFF for the date bytes.
+    uint8_t year = data[14];
+    uint8_t month = data[15];
+    uint8_t day = data[16];
     uint8_t hour = data[18];
     uint8_t minute = data[19];
     uint8_t second = data[20];
+    bool date_valid = year <= 99 && month >= 1 && month <= 12 && day >= 1 && day <= 31;
 
-    ESP_LOGD(TAG, "Spa clock: %02d/%02d %02d:%02d:%02d", day, month, hour, minute, second);
-
-    if (spa_time_sensor_) {
-      char time_str[20];
-      snprintf(time_str, sizeof(time_str), "%02d/%02d %02d:%02d:%02d", day, month, hour, minute, second);
-      spa_time_sensor_->publish_state(time_str);
+    char time_str[24];
+    if (date_valid) {
+      snprintf(time_str, sizeof(time_str), "%04d-%02d-%02d %02d:%02d:%02d", 2000 + year, month, day,
+               hour, minute, second);
+    } else {
+      snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hour, minute, second);
     }
+    ESP_LOGD(TAG, "Spa clock: %s (raw date %02X %02X %02X, weekday %d)", time_str, year, month, day, data[17]);
+
+    if (spa_time_sensor_)
+      spa_time_sensor_->publish_state(time_str);
 
     send_i2c_message(ACK_MESSAGE, 15);
     return;
@@ -790,30 +815,16 @@ void GeckoSpa::update_climate_state() {
   climate_->publish_state();
 }
 
-int GeckoSpa::days_since_2000(int day, int month, int year) {
-  // Calculate days since Jan 1, 2000
-  struct tm tm = {};
-  tm.tm_year = 100 + year;  // years since 1900, so 2000 = 100
-  tm.tm_mon = month - 1;    // 0-based month
-  tm.tm_mday = day;
-  time_t target = mktime(&tm);
-
-  struct tm epoch = {};
-  epoch.tm_year = 100;  // 2000
-  epoch.tm_mon = 0;     // January
-  epoch.tm_mday = 1;
-  time_t base = mktime(&epoch);
-
-  return (int)((target - base) / 86400);
-}
-
 void GeckoSpa::parse_notification_message(const uint8_t *data) {
   // Notification entries start at byte 16, each entry is 6 bytes:
-  // [ID] [DD] [MM] [YY] [INTERVAL_LO] [INTERVAL_HI]
+  // [ID] [YY] [MM] [DD] [INTERVAL_LO] [INTERVAL_HI]  (date order configurable, Y-M-D default)
   // ID: 0x01=Rinse Filter, 0x02=Clean Filter, 0x03=Change Water, 0x04=Spa Checkup
+  bool changed = false;
   for (int i = 0; i < 4; i++) {
     int offset = 16 + (i * 6);
     uint8_t id = data[offset];
+    if (id < 1 || id > 4)
+      continue;
     uint8_t reset_day, reset_month, reset_year;
     if (notif_date_format_ == NotifDateFormat::D_M_Y) {
       reset_day = data[offset + 1];
@@ -826,8 +837,12 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
     }
     uint16_t interval = data[offset + 4] | (data[offset + 5] << 8);
 
-    if (id == 0 || interval == 0)
+    if (interval == 0 || reset_year > 99 || reset_month < 1 || reset_month > 12 || reset_day < 1 ||
+        reset_day > 31) {
+      ESP_LOGW(TAG, "Notification %d: invalid reset date (raw %02X %02X %02X), interval=%d", id,
+               data[offset + 1], data[offset + 2], data[offset + 3], interval);
       continue;
+    }
 
     // Calculate due date: reset_date + interval days
     struct tm reset_tm = {};
@@ -841,8 +856,8 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
     snprintf(date_str, sizeof(date_str), "%04d-%02d-%02d",
              1900 + reset_tm.tm_year, reset_tm.tm_mon + 1, reset_tm.tm_mday);
 
-    ESP_LOGI(TAG, "Notification %d: reset=%02d/%02d/%02d interval=%d due=%s",
-             id, reset_day, reset_month, reset_year, interval, date_str);
+    ESP_LOGI(TAG, "Notification %d: reset=20%02d-%02d-%02d interval=%d due=%s",
+             id, reset_year, reset_month, reset_day, interval, date_str);
 
     text_sensor::TextSensor *sensor = nullptr;
     switch (id) {
@@ -868,7 +883,14 @@ void GeckoSpa::parse_notification_message(const uint8_t *data) {
         sensor->publish_state(date_str);
       }
       strcpy(notification_date_[id - 1], date_str);
+      changed = true;
     }
+  }
+
+  if (changed) {
+    NotificationStore stored{};
+    memcpy(stored.dates, notification_date_, sizeof(stored.dates));
+    notif_pref_.save(&stored);
   }
 }
 
