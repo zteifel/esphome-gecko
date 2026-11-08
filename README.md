@@ -722,6 +722,8 @@ TEMP_RAW = temperature_celsius × 18
 ## TODO
 
 - Scheduling of economy intervals and filter cycles in programs (decoding of i2c protocol complete)
+- Retry a send that the Arduino reports as `TX:ERR` (it is currently dropped)
+- Find out whether a synced spa clock stops reminders resetting at midnight ([#13](https://github.com/zteifel/esphome-gecko/issues/13))
 
 
 ## Troubleshooting
